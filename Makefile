@@ -22,6 +22,7 @@ OBJ = wawa.o $(PROTO:.h=.o)
 
 wawa.c: $(PROTO)
 wawa: $(OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)  
 
 WAYLAND_PROTOCOLS != $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols
 WAYLAND_SCANNER   != $(PKG_CONFIG) --variable=wayland_scanner wayland-scanner

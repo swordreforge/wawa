@@ -93,7 +93,7 @@ static struct wl_callback_listener image_cleanup_callback_listener = {
 };
 
 static void
-load_image()
+load_image(void)
 {
 	int fd;
 	struct wl_shm_pool *shm_pool;

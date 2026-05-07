@@ -2,15 +2,10 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <sys/mman.h>
-#include <math.h>
 #include <unistd.h>
-#include <malloc.h>
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
-
-#ifdef __linux__
 #include <linux/memfd.h>
-#endif
 
 #include "stbi_alloc.h"
 
@@ -110,20 +105,7 @@ output_load_image(struct output *output)
 	data = mmap(NULL, output->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (data == MAP_FAILED) die("mmap:");
 
-	image_crop(data, output);
-
-	/* BGR->RGB */ 
-	for (int i = 0; i < output->size; i += 4) {
-		data[i+2] ^= (data[i] ^= data[i+2]);
-		data[i] ^= data[i+2];
-	}
-
-	munmap(data, output->size);
-
-#if defined(__linux__) || \
-	((defined(__FreeBSD__) && (__FreeBSD_version >= 1300048)))
 	fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
-#endif
 
 	shm_pool = wl_shm_create_pool(shm, fd, output->size);
 	buffer = wl_shm_pool_create_buffer(shm_pool, 0,
@@ -131,6 +113,16 @@ output_load_image(struct output *output)
 	wl_shm_pool_destroy(shm_pool);
 	close(fd);
 
+	image_crop(data, output);
+
+	/* RGBA->BGRA */
+	for (int i = 0; i < output->size; i += 4) {
+		data[i] ^= data[i+2];
+		data[i+2] ^= data[i];
+		data[i] ^= data[i+2];
+	}
+
+	munmap(data, output->size);
 	return buffer;
 }
 
@@ -140,6 +132,7 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 {
 	struct wl_buffer *buffer;
 	struct output *output = data;
+
 	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
 
 	output->configured = width == output->width && height == output->height;
@@ -149,7 +142,7 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 		fputs("loaded image", stderr);
 		if (!(image.data = stbi_load(filename,
 		                       &image.width, &image.height, NULL, 4)))
-			die("failed to load image: %s", stbi_failure_reason());	
+			die("failed to load image: %s", stbi_failure_reason());
 	}
 
 	output->width = width;
@@ -257,7 +250,6 @@ static const struct wl_registry_listener registry_listener = {
 int
 main(int argc, char *argv[])
 {
-	struct output *output, *tmp;
 	if (argc != 2) {
 		fprintf(stderr, "usage: %s filename\n", argv[0]);
 		return EXIT_FAILURE;

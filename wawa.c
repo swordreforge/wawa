@@ -48,8 +48,7 @@ static struct wl_list outputs;
 struct image {
 	struct wl_buffer *buffer;
 	const char *filename;
-	int32_t width, height, size;
-	uint32_t *data;
+	int32_t width, height;
 } image;
 
 static void
@@ -83,7 +82,6 @@ image_cleanup_callback(void *data, struct wl_callback *callback, uint32_t id)
 	wl_list_for_each(output, &outputs, link)
 		if (!output->configured) return;
 
-	munmap(image.data, image.size);
 	wl_buffer_destroy(image.buffer);
 	image = (struct image){0};
 }
@@ -97,10 +95,11 @@ load_image(void)
 {
 	int fd;
 	struct wl_shm_pool *shm_pool;
-	unsigned char *data;
+	uint32_t *data;
+	unsigned char *image_data;
 	int32_t size;
 
-	if (!(data = stbi_load(image.filename,
+	if (!(image_data = stbi_load(image.filename,
 	                       &image.width, &image.height, NULL, 4)))
 		die("failed to load image: %s", stbi_failure_reason());
 
@@ -136,11 +135,22 @@ load_image(void)
 		die("ftruncate:");
 	}
 
-	image.data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (image.data == MAP_FAILED) {
+	data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (data == MAP_FAILED) {
 		close(fd);
 		die("mmap:");
 	}
+
+  /* [R, G, B, A] -> ARGB8888 */    
+	for (int i = 0; i < image.width * image.height; i++)
+			data[i] =
+				image_data[4 * i + 3] << 24 |
+			  image_data[4 * i + 0] << 16 |
+			  image_data[4 * i + 1] << 8 |
+			  image_data[4 * i + 2]; 
+
+	stbi_image_free(image_data);
+	munmap(data, size);
 
 #if defined(__linux__) || \
 	((defined(__FreeBSD__) && (__FreeBSD_version >= 1300048)))
@@ -152,16 +162,6 @@ load_image(void)
 		image.width, image.height, image.width * 4, WL_SHM_FORMAT_ARGB8888);
 	wl_shm_pool_destroy(shm_pool);
 	close(fd);
-	
-  /* [R, G, B, A] -> ARGB8888 */    
-	for (int i = 0; i < image.width * image.height; i++)
-			image.data[i] =
-				data[4 * i + 3] << 24 |
-			  data[4 * i + 0] << 16 |
-			  data[4 * i + 1] << 8 |
-			  data[4 * i + 2]; 
-
-	stbi_image_free(data);
 }
 
 static void

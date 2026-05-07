@@ -1,4 +1,5 @@
 /* See LICENSE file for copyright and license details. */
+#include <byteswap.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <sys/mman.h>
@@ -31,15 +32,6 @@ struct output {
 	struct wl_list link;
 };
 
-/*
- * Must be valid when a single monitor is misconfigured
- * or during startup, after which the image is freed.
- */
-struct {
-	int width, height;
-	unsigned char *data;
-} image;
-
 static struct wl_display *display;
 static struct wl_registry *registry;
 static struct wl_compositor *compositor;
@@ -47,7 +39,20 @@ static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_list outputs;
 
-static const char *filename;
+/*
+ * Must be valid when a single monitor is misconfigured
+ * or during startup, after which the image is freed.
+ */
+struct {
+	FILE *fp;
+	int width, height;
+	unsigned char *data;
+} image;
+
+static uint32_t color;
+
+static void image_fill(unsigned char *dst, struct output *output);
+static void (*image_modify)(unsigned char *, struct output *) = image_fill;
 
 static void
 die(const char *fmt, ...)
@@ -69,7 +74,61 @@ die(const char *fmt, ...)
 }
 
 static void
-image_crop(unsigned char *dst, struct output *output)
+parse_color(const char *src)
+{
+	int len;
+
+	if (src[0] == '#')
+		src++;
+	len = strlen(src);
+	if (len != 6 && len != 8)
+		die("bad color: %s", src);
+
+	color = strtoul(src, NULL, 16);
+	if (len == 6)
+		color = (color << 8) | 0xFF;
+
+	color = bswap_32(color);
+}
+
+static void
+image_color(unsigned char *dst, struct output *output)
+{
+	for (size_t i = 0; i < output->size; i += 4)
+		memcpy(dst + i, &color, 4);
+}
+
+static void
+image_stretch(unsigned char *dst, struct output *output)
+{
+	stbir_resize_uint8_linear(
+	  image.data, image.width, image.height, image.width * 4,
+		dst, output->width, output->height, output->stride, 4);
+}
+
+static void
+image_fit(unsigned char *dst, struct output *output)
+{
+	struct {
+		int width, height;
+		int x, y;
+	} crop;
+	double factor;
+
+	factor = fmin((double)output->width/image.width, (double)output->height/image.height);
+	crop.width = image.width * factor;
+	crop.height = image.height * factor;
+	crop.x = (output->width - crop.width) / 2;
+	crop.y = (output->height - crop.height) / 2;
+	stbir_resize_uint8_linear(
+	  image.data, image.width, image.height, image.width * 4,
+		dst + (crop.y * output->stride) + (crop.x * 4),
+		crop.width, crop.height, output->stride,
+		4);
+}
+
+static void
+image_fill(unsigned char *dst, struct output *output)
 {
 	struct {
 		int width, height;
@@ -78,14 +137,36 @@ image_crop(unsigned char *dst, struct output *output)
 	double factor;
 
 	factor = fmin((double)image.width/output->width, (double)image.height/output->height);
-	crop.x = (image.width - (output->width * factor)) / 2;
-	crop.y = (image.height - (output->height * factor)) / 2;
 	crop.width = output->width * factor;
 	crop.height = output->height * factor;
+	crop.x = (image.width - (crop.width)) / 2;
+	crop.y = (image.height - (crop.height)) / 2;
 	stbir_resize_uint8_linear(
-	  image.data + (crop.y * image.width + crop.x) * 4, crop.width, crop.height, image.width * 4,
+	  image.data + (crop.y * image.width + crop.x) * 4,
+	  crop.width, crop.height, image.width * 4,
 		dst, output->width, output->height, output->stride,
 		4);
+}
+
+static void
+image_tile(unsigned char *dst, struct output *o)
+{
+	unsigned char *to, *src;
+	uint16_t off_x, off_y, w, h;
+
+	/* implementation shamelessly stolen from xwallpaper, MIT:
+	 * 2025 Tobias Stoeckmann <tobias@stoeckmann.org> */
+	for (off_y = 0; off_y < o->height; off_y += image.height) {
+		h = (off_y + image.height > o->height) ? o->height - off_y : image.height;
+		for (off_x = 0; off_x < o->width; off_x += image.width) {
+			w = (off_x + image.width > o->width) ? o->width - off_x : image.width;
+			for (int y = 0; y < h; y++) {
+				to = dst + ((off_y + y) * o->stride);
+				src = image.data + (y * image.width * 4);
+				memcpy(to + (off_x * 4), src, w * 4);
+			}
+		}
+	}
 }
 
 static struct wl_buffer *
@@ -113,7 +194,7 @@ output_load_image(struct output *output)
 	wl_shm_pool_destroy(shm_pool);
 	close(fd);
 
-	image_crop(data, output);
+	image_modify(data, output);
 
 	/* RGBA->BGRA */
 	for (int i = 0; i < output->size; i += 4) {
@@ -138,9 +219,9 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 	output->configured = width == output->width && height == output->height;
 	if (output->configured) return;
 
-	if (!image.data) {
+	if (!image.data && image.fp) {
 		fputs("loaded image", stderr);
-		if (!(image.data = stbi_load(filename,
+		if (!(image.data = stbi_load_from_file(image.fp,
 		                       &image.width, &image.height, NULL, 4)))
 			die("failed to load image: %s", stbi_failure_reason());
 	}
@@ -247,15 +328,28 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = registry_handle_remove,
 };
 
+
+
 int
 main(int argc, char *argv[])
 {
-	if (argc != 2) {
-		fprintf(stderr, "usage: %s filename\n", argv[0]);
-		return EXIT_FAILURE;
-	}
+	switch (argc) {
+	case 2:
+		parse_color(argv[1]);
+		image_modify = image_color;
+		break;
+	case 3:
+		if (!strcmp(argv[1], "stretch")) image_modify = image_stretch;
+		else if (!strcmp(argv[1], "fit")) image_modify = image_fit;
+		else if (!strcmp(argv[1], "fill")) image_modify = image_fill;
+		else if (!strcmp(argv[1], "tile")) image_modify = image_tile;
+		else goto usage;
 
-	filename = argv[1];
+		if (!(image.fp = fopen(argv[2], "rb"))) die("fopen %s:", argv[2]);
+		break;
+	default:
+		goto usage;
+	}
 
 	if (!(display = wl_display_connect(NULL)))
 		die("failed to connect to wayland");
@@ -273,4 +367,10 @@ main(int argc, char *argv[])
 		;
 
 	return EXIT_SUCCESS;
+
+usage:
+	fprintf(stderr, "usage: %s stretch|fit|fill|tile filename\n"
+	                "       %s RRGGBBAA\n",
+	        argv[0], argv[0]);
+	return EXIT_FAILURE;
 }

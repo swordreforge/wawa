@@ -220,7 +220,7 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 	if (output->configured) return;
 
 	if (!image.data && image.fp) {
-		fputs("loaded image", stderr);
+		if (fseek(image.fp, 0, SEEK_SET) < 0) die("fseek:");
 		if (!(image.data = stbi_load_from_file(image.fp,
 		                       &image.width, &image.height, NULL, 4)))
 			die("failed to load image: %s", stbi_failure_reason());
@@ -238,6 +238,13 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 	wl_buffer_destroy(buffer);
 
 	output->configured = true;
+
+	if (!image.fp) return;
+	wl_list_for_each(output, &outputs, link)
+		if (!output->configured) return;
+
+	stbi_image_free(image.data);
+	image.data = NULL;
 }
 
 static void

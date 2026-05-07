@@ -17,7 +17,7 @@ LDLIBS   = $(LIBS)
 
 all: wawa
 
-PROTO = viewporter-protocol.h wlr-layer-shell-unstable-v1-protocol.h xdg-shell-protocol.h
+PROTO = wlr-layer-shell-unstable-v1-protocol.h xdg-shell-protocol.h
 OBJ = wawa.o $(PROTO:.h=.o)
 
 wawa.c: $(PROTO)
@@ -32,10 +32,6 @@ xdg-shell-protocol.h:
 	$(WAYLAND_SCANNER) client-header $(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
 xdg-shell-protocol.c:
 	$(WAYLAND_SCANNER) private-code $(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
-viewporter-protocol.h:
-	$(WAYLAND_SCANNER) client-header $(WAYLAND_PROTOCOLS)/stable/viewporter/viewporter.xml $@
-viewporter-protocol.c:
-	$(WAYLAND_SCANNER) private-code $(WAYLAND_PROTOCOLS)/stable/viewporter/viewporter.xml $@
 wlr-layer-shell-unstable-v1-protocol.h:
 	$(WAYLAND_SCANNER) client-header wlr-layer-shell-unstable-v1.xml $@
 wlr-layer-shell-unstable-v1-protocol.c:

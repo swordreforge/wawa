@@ -12,11 +12,14 @@
 #include <linux/memfd.h>
 #endif
 
+#include "stbi_alloc.h"
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize2.h"
 
 #include "wlr-layer-shell-unstable-v1-protocol.h"
-#include "viewporter-protocol.h"
 
 struct output {
 	uint32_t registry_name;
@@ -24,32 +27,32 @@ struct output {
 	struct wl_output *wl;
 	struct wl_surface *surface;
 	struct zwlr_layer_surface_v1 *layer_surface;
-	struct wp_viewport *viewport;	
+
+	uint32_t width, height;
+	uint32_t size, stride;
 
 	bool configured;
 
 	struct wl_list link;
 };
 
+/*
+ * Must be valid when a single monitor is misconfigured
+ * or during startup, after which the image is freed.
+ */
+struct {
+	int width, height;
+	unsigned char *data;
+} image;
+
 static struct wl_display *display;
 static struct wl_registry *registry;
 static struct wl_compositor *compositor;
-static struct wp_viewporter *viewporter;
 static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_list outputs;
 
-/*
- * Rather than create, resize, and maintain a image buffer for each
- * output available, use wp_viewport to scale and crop the image to the
- * output contents by having a full representation of the image.
- * This is created every time a set of monitors need to be drawn.
- */
-struct image {
-	struct wl_buffer *buffer;
-	const char *filename;
-	int32_t width, height;
-} image;
+static const char *filename;
 
 static void
 die(const char *fmt, ...)
@@ -71,129 +74,96 @@ die(const char *fmt, ...)
 }
 
 static void
-image_cleanup_callback(void *data, struct wl_callback *callback, uint32_t id)
+image_crop(unsigned char *dst, struct output *output)
 {
-	struct output *output;
-	wl_callback_destroy(callback);
+	struct {
+		int width, height;
+		int x, y;
+	} crop;
+	double factor;
 
-	/* Already destroyed */
-	if (!image.buffer) return;
-
-	wl_list_for_each(output, &outputs, link)
-		if (!output->configured) return;
-
-	wl_buffer_destroy(image.buffer);
-	image = (struct image){0};
+	factor = fmin((double)image.width/output->width, (double)image.height/output->height);
+	crop.x = (image.width - (output->width * factor)) / 2;
+	crop.y = (image.height - (output->height * factor)) / 2;
+	crop.width = output->width * factor;
+	crop.height = output->height * factor;
+	stbir_resize_uint8_linear(
+	  image.data + (crop.y * image.width + crop.x) * 4, crop.width, crop.height, image.width * 4,
+		dst, output->width, output->height, output->stride,
+		4);
 }
 
-static struct wl_callback_listener image_cleanup_callback_listener = {
-	.done = image_cleanup_callback,
-};
-
-static void
-load_image(void)
+static struct wl_buffer *
+output_load_image(struct output *output)
 {
-	int fd;
+	int fd = -1;
 	struct wl_shm_pool *shm_pool;
-	uint32_t *data;
-	unsigned char *image_data;
-	int32_t size;
-
-	if (!(image_data = stbi_load(image.filename,
-	                       &image.width, &image.height, NULL, 4)))
-		die("failed to load image: %s", stbi_failure_reason());
-
-	size = image.width * image.height * 4;
+	struct wl_buffer *buffer;
+	unsigned char *data;
 	
-#if defined(__linux__) || \
-	((defined(__FreeBSD__) && (__FreeBSD_version >= 1300048)))
-	fd = memfd_create("wawa-shm-buffer",
-		MFD_CLOEXEC | MFD_ALLOW_SEALING |
-#if defined(MFD_NOEXEC_SEAL)
-		MFD_NOEXEC_SEAL
-#else
-		0
-#endif
-	);
-#else
-	char template[] = "/tmp/wawa-XXXXXX";
-#if defined(__OpenBSD__)
-	fd = shm_mkstemp(template);
-#else
-	fd = mkostemp(template, O_CLOEXEC);
-#endif
-	if (fd < 0) die("mktemp:")
-#if defined(__OpenBSD__)
-	shm_unlink(template);
-#else
-	unlink(template);
-#endif
-#endif
+	fd = memfd_create("drwbuf-shm-buffer-pool",
+		MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
+	if (fd < 0) die("memfd_create:");
 
-	if ((ftruncate(fd, size)) < 0) {
-		close(fd);
-		die("ftruncate:");
+	if ((ftruncate(fd, output->size)) < 0) die("ftruncate:");
+
+	data = mmap(NULL, output->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (data == MAP_FAILED) die("mmap:");
+
+	image_crop(data, output);
+
+	/* BGR->RGB */ 
+	for (int i = 0; i < output->size; i += 4) {
+		data[i+2] ^= (data[i] ^= data[i+2]);
+		data[i] ^= data[i+2];
 	}
 
-	data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (data == MAP_FAILED) {
-		close(fd);
-		die("mmap:");
-	}
-
-  /* [R, G, B, A] -> ARGB8888 */    
-	for (int i = 0; i < image.width * image.height; i++)
-			data[i] =
-				image_data[4 * i + 3] << 24 |
-			  image_data[4 * i + 0] << 16 |
-			  image_data[4 * i + 1] << 8 |
-			  image_data[4 * i + 2]; 
-
-	stbi_image_free(image_data);
-	munmap(data, size);
+	munmap(data, output->size);
 
 #if defined(__linux__) || \
 	((defined(__FreeBSD__) && (__FreeBSD_version >= 1300048)))
 	fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
 #endif
 
-	shm_pool = wl_shm_create_pool(shm, fd, size);
-	image.buffer = wl_shm_pool_create_buffer(shm_pool, 0,
-		image.width, image.height, image.width * 4, WL_SHM_FORMAT_ARGB8888);
+	shm_pool = wl_shm_create_pool(shm, fd, output->size);
+	buffer = wl_shm_pool_create_buffer(shm_pool, 0,
+		output->width, output->height, output->stride, WL_SHM_FORMAT_ARGB8888);
 	wl_shm_pool_destroy(shm_pool);
 	close(fd);
+
+	return buffer;
 }
 
 static void
 layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_surface,
 		uint32_t serial, uint32_t width, uint32_t height)
 {
-	struct wl_callback *callback;
+	struct wl_buffer *buffer;
 	struct output *output = data;
 	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
 
-	/* Load the image only when necessary, and free when all monitors have
-	 * been configured. */
-	if (!image.buffer) load_image();
+	output->configured = width == output->width && height == output->height;
+	if (output->configured) return;
 
-	/* Fit to screen */
-	double factor = fmin((double)(image.width)/width, (double)(image.height)/height);
-	wp_viewport_set_source(output->viewport,
-	    wl_fixed_from_double((image.width - (width * factor)) / 2),
-	    wl_fixed_from_double((image.height - (height * factor)) / 2),
-	    wl_fixed_from_double(width * factor), wl_fixed_from_double(height * factor));
+	if (!image.data) {
+		fputs("loaded image", stderr);
+		if (!(image.data = stbi_load(filename,
+		                       &image.width, &image.height, NULL, 4)))
+			die("failed to load image: %s", stbi_failure_reason());	
+	}
 
-	wl_surface_attach(output->surface, image.buffer, 0, 0);
+	output->width = width;
+	output->height = height;
+	output->stride = width * 4;
+	output->size = width * height * 4;
+
+	buffer = output_load_image(output);
+	wl_surface_attach(output->surface, buffer, 0, 0);
 	wl_surface_damage_buffer(output->surface, 0, 0, INT32_MAX, INT32_MAX);
-	wp_viewport_set_destination(output->viewport, width, height);
 	wl_surface_commit(output->surface);
+	wl_buffer_destroy(buffer);
 
 	output->configured = true;
-
-	/* Niri doesn't actually tell the buffer that it is released or not.
-	 * Use a callback.. */
-	callback = wl_display_sync(display);
-	wl_callback_add_listener(callback, &image_cleanup_callback_listener, NULL);
 }
 
 static void
@@ -201,7 +171,6 @@ layer_surface_handle_closed(void *data, struct zwlr_layer_surface_v1 *surface)
 {
 	struct output *output = data;
 	zwlr_layer_surface_v1_destroy(output->layer_surface);
-	wp_viewport_destroy(output->viewport);
 	wl_surface_destroy(output->surface);
 }
 
@@ -217,7 +186,6 @@ output_setup_callback(void *data, struct wl_callback *callback,
 	struct output *output = data;
 
 	output->surface = wl_compositor_create_surface(compositor);
-	output->viewport = wp_viewporter_get_viewport(viewporter, output->surface);
 	
 	output->layer_surface = zwlr_layer_shell_v1_get_layer_surface(layer_shell,
 				output->surface, output->wl, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, "wallpaper");
@@ -246,13 +214,12 @@ registry_handle_global(void *data, struct wl_registry *registry,
 		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 6);
  	else if (!strcmp(interface, wl_shm_interface.name))
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
-	else if (!strcmp(interface, wp_viewporter_interface.name))
-		viewporter = wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
 	else if (!strcmp(interface, zwlr_layer_shell_v1_interface.name))
 		layer_shell = wl_registry_bind(registry, name,
 			&zwlr_layer_shell_v1_interface, 1);
 	else if (!strcmp(interface, wl_output_interface.name)) {
 		struct output *output = calloc(1, sizeof(struct output));
+		if (!output) die("calloc:");
 		output->registry_name = name;
 		output->wl = wl_registry_bind(registry, name,
 			&wl_output_interface, 4);
@@ -277,6 +244,7 @@ registry_handle_remove(void *data, struct wl_registry *registry, uint32_t name)
 			continue;	
 		wl_output_destroy(output->wl);
 		wl_list_remove(&output->link);
+		free(output);
 		break;
 	}
 }
@@ -289,12 +257,13 @@ static const struct wl_registry_listener registry_listener = {
 int
 main(int argc, char *argv[])
 {
+	struct output *output, *tmp;
 	if (argc != 2) {
 		fprintf(stderr, "usage: %s filename\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 
-	image.filename = argv[1];
+	filename = argv[1];
 
 	if (!(display = wl_display_connect(NULL)))
 		die("failed to connect to wayland");
@@ -305,7 +274,7 @@ main(int argc, char *argv[])
 	wl_registry_add_listener(registry, &registry_listener, NULL);
 	wl_display_roundtrip(display);
 		
-	if (!compositor || !layer_shell || !viewporter || !shm)
+	if (!compositor || !layer_shell || !shm)
 		die("bad compositor available");
 
 	while (wl_display_dispatch(display))

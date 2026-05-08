@@ -71,7 +71,7 @@ die(const char *fmt, ...)
 	exit(EXIT_FAILURE);
 }
 
-static void
+static bool
 parse_color(const char *src)
 {
 	int len;
@@ -79,8 +79,7 @@ parse_color(const char *src)
 	if (src[0] == '#')
 		src++;
 	len = strlen(src);
-	if (len != 6 && len != 8)
-		die("bad color: %s", src);
+	if (len != 6 && len != 8) return false;
 
 	color = strtoul(src, NULL, 16);
 	if (len == 6)
@@ -88,6 +87,7 @@ parse_color(const char *src)
 
 	/* for colorspace conversion in output_image_load */
 	color = bswap_32(color);
+	return true;
 }
 
 static void
@@ -322,7 +322,7 @@ main(int argc, char *argv[])
 {
 	switch (argc) {
 	case 2:
-		parse_color(argv[1]);
+		if (!(parse_color(argv[1]))) goto usage;
 		image_modify = image_color;
 		break;
 	case 3:

@@ -9,7 +9,6 @@
 #include <linux/memfd.h>
 
 #include "stbi_alloc.h"
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
@@ -18,8 +17,6 @@
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 
 struct output {
-	uint32_t registry_name;
-
 	struct wl_output *wl;
 	struct wl_surface *surface;
 	struct zwlr_layer_surface_v1 *layer_surface;
@@ -32,6 +29,11 @@ struct output {
 	struct wl_list link;
 };
 
+struct rect {
+	int width, height;
+	int x, y;
+};
+
 static struct wl_display *display;
 static struct wl_registry *registry;
 static struct wl_compositor *compositor;
@@ -39,10 +41,6 @@ static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_list outputs;
 
-/*
- * Must be valid when a single monitor is misconfigured
- * or during startup, after which the image is freed.
- */
 struct {
 	FILE *fp;
 	int width, height;
@@ -88,6 +86,7 @@ parse_color(const char *src)
 	if (len == 6)
 		color = (color << 8) | 0xFF;
 
+	/* for colorspace conversion in output_image_load */
 	color = bswap_32(color);
 }
 
@@ -109,10 +108,7 @@ image_stretch(unsigned char *dst, struct output *output)
 static void
 image_fit(unsigned char *dst, struct output *output)
 {
-	struct {
-		int width, height;
-		int x, y;
-	} crop;
+	struct rect crop;
 	double factor;
 
 	factor = fmin((double)output->width/image.width, (double)output->height/image.height);
@@ -123,17 +119,13 @@ image_fit(unsigned char *dst, struct output *output)
 	stbir_resize_uint8_linear(
 	  image.data, image.width, image.height, image.width * 4,
 		dst + (crop.y * output->stride) + (crop.x * 4),
-		crop.width, crop.height, output->stride,
-		4);
+		crop.width, crop.height, output->stride, 4);
 }
 
 static void
 image_fill(unsigned char *dst, struct output *output)
 {
-	struct {
-		int width, height;
-		int x, y;
-	} crop;
+	struct rect crop;
 	double factor;
 
 	factor = fmin((double)image.width/output->width, (double)image.height/output->height);
@@ -144,8 +136,7 @@ image_fill(unsigned char *dst, struct output *output)
 	stbir_resize_uint8_linear(
 	  image.data + (crop.y * image.width + crop.x) * 4,
 	  crop.width, crop.height, image.width * 4,
-		dst, output->width, output->height, output->stride,
-		4);
+		dst, output->width, output->height, output->stride, 4);
 }
 
 static void
@@ -221,9 +212,8 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 
 	if (!image.data && image.fp) {
 		if (fseek(image.fp, 0, SEEK_SET) < 0) die("fseek:");
-		if (!(image.data = stbi_load_from_file(image.fp,
-		                       &image.width, &image.height, NULL, 4)))
-			die("failed to load image: %s", stbi_failure_reason());
+		image.data = stbi_load_from_file(image.fp, &image.width, &image.height, NULL, 4);
+		if (!image.data) die("failed to load image: %s", stbi_failure_reason());
 	}
 
 	output->width = width;
@@ -233,7 +223,6 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 
 	buffer = output_load_image(output);
 	wl_surface_attach(output->surface, buffer, 0, 0);
-	wl_surface_damage_buffer(output->surface, 0, 0, INT32_MAX, INT32_MAX);
 	wl_surface_commit(output->surface);
 	wl_buffer_destroy(buffer);
 
@@ -251,8 +240,12 @@ static void
 layer_surface_handle_closed(void *data, struct zwlr_layer_surface_v1 *surface)
 {
 	struct output *output = data;
+
 	zwlr_layer_surface_v1_destroy(output->layer_surface);
 	wl_surface_destroy(output->surface);
+	wl_output_destroy(output->wl);
+	wl_list_remove(&output->link);
+	free(output);
 }
 
 static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
@@ -292,7 +285,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
 	struct wl_callback *callback;
 
 	if (!strcmp(interface, wl_compositor_interface.name))
-		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 6);
+		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 1);
  	else if (!strcmp(interface, wl_shm_interface.name))
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
 	else if (!strcmp(interface, zwlr_layer_shell_v1_interface.name))
@@ -301,9 +294,8 @@ registry_handle_global(void *data, struct wl_registry *registry,
 	else if (!strcmp(interface, wl_output_interface.name)) {
 		struct output *output = calloc(1, sizeof(struct output));
 		if (!output) die("calloc:");
-		output->registry_name = name;
 		output->wl = wl_registry_bind(registry, name,
-			&wl_output_interface, 4);
+			&wl_output_interface, 1);
 		wl_list_insert(&outputs, &output->link);
 		/*
 		 * There is no gurantee of the registry order, ensure a callback is used
@@ -318,24 +310,12 @@ registry_handle_global(void *data, struct wl_registry *registry,
 static void
 registry_handle_remove(void *data, struct wl_registry *registry, uint32_t name)
 {
-	struct output *output, *tmp;
-	
-	wl_list_for_each_safe(output, tmp, &outputs, link) {
-		if (output->registry_name != name)
-			continue;	
-		wl_output_destroy(output->wl);
-		wl_list_remove(&output->link);
-		free(output);
-		break;
-	}
 }
 
 static const struct wl_registry_listener registry_listener = {
 	.global = registry_handle_global,
 	.global_remove = registry_handle_remove,
 };
-
-
 
 int
 main(int argc, char *argv[])

@@ -118,7 +118,7 @@ image_fit(unsigned char *dst, struct output *output)
 	crop.y = (output->height - crop.height) / 2;
 	stbir_resize_uint8_linear(
 	  image.data, image.width, image.height, image.width * 4,
-		dst + (crop.y * output->stride) + (crop.x * 4),
+		dst + crop.y * output->stride + crop.x * 4,
 		crop.width, crop.height, output->stride, 4);
 }
 
@@ -131,10 +131,10 @@ image_fill(unsigned char *dst, struct output *output)
 	factor = fmin((double)image.width/output->width, (double)image.height/output->height);
 	crop.width = output->width * factor;
 	crop.height = output->height * factor;
-	crop.x = (image.width - (crop.width)) / 2;
-	crop.y = (image.height - (crop.height)) / 2;
+	crop.x = (image.width - crop.width) / 2;
+	crop.y = (image.height - crop.height) / 2;
 	stbir_resize_uint8_linear(
-	  image.data + (crop.y * image.width + crop.x) * 4,
+	  image.data + crop.y * image.width * 4 + crop.x * 4,
 	  crop.width, crop.height, image.width * 4,
 		dst, output->width, output->height, output->stride, 4);
 }

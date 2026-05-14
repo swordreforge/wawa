@@ -21,6 +21,7 @@ struct output {
 	struct wl_surface *surface;
 	struct zwlr_layer_surface_v1 *layer_surface;
 
+	int32_t x, y;
 	uint32_t width, height;
 	uint32_t size, stride;
 
@@ -51,6 +52,9 @@ static uint32_t color;
 
 static void image_fill(unsigned char *dst, struct output *output);
 static void (*image_modify)(unsigned char *, struct output *) = image_fill;
+
+static void
+noop() {}
 
 static void
 die(const char *fmt, ...)
@@ -254,6 +258,25 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 };
 
 static void
+output_handle_geometry(void *data, struct wl_output *wl_output,
+	int32_t x, int32_t y, int32_t physical_width, int32_t physical_height,
+	int32_t subpixel, const char *make, const char *model, int32_t transform)
+{
+	struct output *output = data;
+	output->x = x;
+	output->y = y;
+}
+
+static const struct wl_output_listener output_listener = {
+	.geometry = output_handle_geometry,
+	.mode = noop,
+	.done = noop,
+	.scale = noop,
+	.name = noop,
+	.description = noop,
+};
+
+static void
 output_setup_callback(void *data, struct wl_callback *callback,
 		uint32_t time)
 {
@@ -296,6 +319,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
 		if (!output) die("calloc:");
 		output->wl = wl_registry_bind(registry, name,
 			&wl_output_interface, 1);
+		wl_output_add_listener(output->wl, &output_listener, output);
 		wl_list_insert(&outputs, &output->link);
 		/*
 		 * There is no gurantee of the registry order, ensure a callback is used

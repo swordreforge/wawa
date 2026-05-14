@@ -1,8 +1,9 @@
 # wawa
 
-A simple, hackable Wayland wallpaper setter utilizing `stb_image` that targets
-`wlr-layer-shell` supported compositors, with stretch, fit, fill, tile and a color,
-with less SLOC than your average wallpaper setter.
+A simple, hackable, and disctintive Wayland wallpaper setter utilizing
+`stb_image` that targets `wlr-layer-shell` supported compositors, featuring
+tiling, spreading across monitors, along with fill, fit and stretching the
+wallpaper, with less SLOC than your average wallpaper setter.
 
 In wawa, the image is loaded only for monitors that need it, and is immediately
 freed when all monitors have been configured; this keeps the memory usage of
@@ -22,6 +23,8 @@ monitor specified on the command line.
 Unfortunately, wbg is so simple, while supporting modern libraries, it has only
 two modes, fit (with `-s` flag) and fill (default), which makes it undesireable
 for those who want to tile or etc.
+
+No other wallpaper setter supports tiling out of the box.
 
 [swaybg]: https://github.com/swaywm/swaybg
 [wbg]: https://codeberg.org/dnkl/wbg

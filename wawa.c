@@ -16,6 +16,9 @@
 
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 
+#define MAX(A, B) ((A) > (B) ? (A) : (B))
+#define MIN(A, B) ((A) < (B) ? (A) : (B))
+
 struct output {
 	struct wl_output *wl;
 	struct wl_surface *surface;
@@ -164,6 +167,45 @@ image_tile(unsigned char *dst, struct output *o)
 	}
 }
 
+static void
+image_spread(unsigned char *dst, struct output *output)
+{
+	/* i can only claim that i designated the exact ways to perform
+	 * the calculations. */
+	struct output *o;
+	struct rect crop;
+	int min_x, min_y, max_x, max_y;
+	double scale;
+
+	/* set initial value to account for incoming negative outputs */
+	o = wl_container_of(outputs.next, o, link);
+	max_x = (min_x = o->x) + (o->width);
+	max_y = (min_y = o->y) + (o->height);
+
+	wl_list_for_each(o, &outputs, link) {
+		/* avoids some obscure compiler optimization ?? */
+		int32_t ow = o->width, oh = o->height;
+		min_x = MIN(min_x, o->x);
+		min_y = MIN(min_y, o->y);
+		max_x = MAX(o->x + ow, max_x);
+		max_y = MAX(o->y + oh, max_y);
+	}
+
+	crop.width = max_x - min_x;
+	crop.height = max_y - min_y;
+	scale = 1.0 / fmax((double)crop.width / image.width, (double)crop.height / image.height);
+	/* offset total bounding to center */
+	crop.x = (output->x - min_x) * scale + (image.width - crop.width * scale) / 2;
+	crop.y = (output->y - min_y) * scale + (image.height - crop.height * scale) / 2;
+	crop.width = MIN(ceil(output->width * scale), image.width - crop.x);
+	crop.height = MIN(ceil(output->height * scale), image.height - crop.y);
+
+	stbir_resize_uint8_linear(
+		image.data + (crop.y * image.width + crop.x) * 4,
+		crop.width, crop.height, image.width * 4,
+		dst, output->width, output->height, output->stride, 4);
+}
+
 static struct wl_buffer *
 output_load_image(struct output *output)
 {
@@ -211,8 +253,8 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 
 	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
 
-	output->configured = width == output->width && height == output->height;
-	if (output->configured) return;
+	if (output->configured && width == output->width && height == output->height)
+		return;
 
 	if (!image.data && image.fp) {
 		if (fseek(image.fp, 0, SEEK_SET) < 0) die("fseek:");
@@ -265,6 +307,10 @@ output_handle_geometry(void *data, struct wl_output *wl_output,
 	struct output *output = data;
 	output->x = x;
 	output->y = y;
+
+	/* A output's geometry has changed, mark all outputs as misconfigured */
+	wl_list_for_each(output, &outputs, link)
+		output->configured = false;
 }
 
 static const struct wl_output_listener output_listener = {
@@ -354,6 +400,7 @@ main(int argc, char *argv[])
 		else if (!strcmp(argv[1], "fit")) image_modify = image_fit;
 		else if (!strcmp(argv[1], "fill")) image_modify = image_fill;
 		else if (!strcmp(argv[1], "tile")) image_modify = image_tile;
+		else if (!strcmp(argv[1], "spread")) image_modify = image_spread;
 		else goto usage;
 
 		if (!(image.fp = fopen(argv[2], "rb"))) die("fopen %s:", argv[2]);
@@ -370,7 +417,8 @@ main(int argc, char *argv[])
 	registry = wl_display_get_registry(display);
 	wl_registry_add_listener(registry, &registry_listener, NULL);
 	wl_display_roundtrip(display);
-		
+	wl_display_roundtrip(display); /* output handlers */
+
 	if (!compositor || !layer_shell || !shm)
 		die("bad compositor available");
 
@@ -380,7 +428,7 @@ main(int argc, char *argv[])
 	return EXIT_SUCCESS;
 
 usage:
-	fprintf(stderr, "usage: %s stretch|fit|fill|tile filename\n"
+	fprintf(stderr, "usage: %s fill|fit|spread|stretch|tile filename\n"
 	                "       %s RRGGBBAA\n",
 	        argv[0], argv[0]);
 	return EXIT_FAILURE;

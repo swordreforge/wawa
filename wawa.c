@@ -6,7 +6,11 @@
 #include <unistd.h>
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
+#ifdef __linux__
 #include <linux/memfd.h>
+#else
+#include <sys/mman.h>
+#endif
 
 #include "stbi_alloc.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -215,7 +219,11 @@ output_load_image(struct output *output)
 	unsigned char *data;
 	
 	fd = memfd_create("drwbuf-shm-buffer-pool",
-		MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
+		MFD_CLOEXEC | MFD_ALLOW_SEALING 
+	#ifdef __linux__
+		| MFD_NOEXEC_SEAL
+	#endif
+	);
 	if (fd < 0) die("memfd_create:");
 
 	if ((ftruncate(fd, output->size)) < 0) die("ftruncate:");

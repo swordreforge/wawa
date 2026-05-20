@@ -8,8 +8,6 @@
 #include <wayland-client.h>
 #ifdef __linux__
 #include <linux/memfd.h>
-#else
-#include <sys/mman.h>
 #endif
 
 #include "stbi_alloc.h"

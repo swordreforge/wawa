@@ -11,7 +11,7 @@ PKGS = wayland-client
 INCS != $(PKG_CONFIG) --cflags $(PKGS)
 LIBS != $(PKG_CONFIG) --libs $(PKGS)
 
-CPPFLAGS = -DGNU_SOURCE -DVERSION=\"$(VERSION)\"
+CPPFLAGS = -D_GNU_SOURCE -DVERSION=\"$(VERSION)\"
 CFLAGS   = -pedantic -Wall $(CPPFLAGS) $(INCS)
 LDLIBS   = $(LIBS)
 

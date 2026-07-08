@@ -45,6 +45,8 @@ struct output {
 	struct wl_callback *frame_cb;
 	unsigned char *anim_old, *anim_new;
 	int anim_left;
+	struct wl_buffer *anim_buf;  /* pre-allocated SHM buffer (avoid per-frame memfd) */
+	void *anim_shm;              /* persistent mmap of anim_buf's backing memory */
 
 	struct wl_list link;
 };
@@ -307,11 +309,29 @@ now_ms(void)
 static struct wl_buffer *
 output_load_image(struct output *output)
 {
+	unsigned char *data;
+
+	if (output->anim_left > 0 && output->anim_buf) {
+		/* Fast path — use pre-allocated SHM buffer, zero syscalls */
+		data = output->anim_shm;
+		float a = 1.0f - (float)output->anim_left / FADE_STEPS;
+		for (int i = 0; i < output->size; i += 4) {
+			data[i+0] = output->anim_old[i+0] * (1.0f - a) +
+			            output->anim_new[i+0] * a;
+			data[i+1] = output->anim_old[i+1] * (1.0f - a) +
+			            output->anim_new[i+1] * a;
+			data[i+2] = output->anim_old[i+2] * (1.0f - a) +
+			            output->anim_new[i+2] * a;
+			data[i+3] = output->anim_old[i+3] * (1.0f - a) +
+			            output->anim_new[i+3] * a;
+		}
+		return output->anim_buf;
+	}
+
 	int fd = -1;
 	struct wl_shm_pool *shm_pool;
 	struct wl_buffer *buffer;
-	unsigned char *data;
-	
+
 	fd = memfd_create("drwbuf-shm-buffer-pool",
 		MFD_CLOEXEC | MFD_ALLOW_SEALING 
 	#ifdef __linux__
@@ -334,7 +354,7 @@ output_load_image(struct output *output)
 	close(fd);
 
 	if (output->anim_left > 0) {
-		/* cross-fade blend */
+		/* cross-fade blend (fallback, no pre-allocated buffer) */
 		float a = 1.0f - (float)output->anim_left / FADE_STEPS;
 		for (int i = 0; i < output->size; i += 4) {
 			data[i+0] = output->anim_old[i+0] * (1.0f - a) +
@@ -535,6 +555,14 @@ end_transition(void)
 
 	/* free per-output animation buffers and reset */
 	wl_list_for_each(output, &outputs, link) {
+		if (output->anim_shm) {
+			munmap(output->anim_shm, output->size);
+			output->anim_shm = NULL;
+		}
+		if (output->anim_buf) {
+			wl_buffer_destroy(output->anim_buf);
+			output->anim_buf = NULL;
+		}
 		free(output->anim_old);
 		free(output->anim_new);
 		output->anim_old = NULL;
@@ -580,7 +608,10 @@ render_transition_frame(void)
 		wl_callback_add_listener(output->frame_cb, &frame_listener, output);
 
 		wl_surface_commit(output->surface);
-		wl_buffer_destroy(buf);
+		/* Pre-allocated animation buffer is reused across frames;
+		 * only destroy fallback buffers created on the fly. */
+		if (buf != output->anim_buf)
+			wl_buffer_destroy(buf);
 
 		output->anim_left--;
 	}
@@ -645,6 +676,33 @@ start_transition(void)
 		resize_to(output->anim_new, output,
 			next_image.data, next_image.width, next_image.height);
 		output->anim_left = FADE_STEPS;
+	}
+
+	/* Pre-allocate SHM buffers for the animation — eliminates
+	 * memfd_create/ftruncate/mmap/shm_pool per frame (8+ syscalls). */
+	wl_list_for_each(output, &outputs, link) {
+		if (!output->configured)
+			continue;
+		int fd = memfd_create("wawa-anim",
+			MFD_CLOEXEC | MFD_ALLOW_SEALING
+		#ifdef __linux__
+			| MFD_NOEXEC_SEAL
+		#endif
+		);
+		if (fd < 0) die("memfd_create:");
+		if (ftruncate(fd, output->size) < 0) die("ftruncate:");
+		output->anim_shm = mmap(NULL, output->size,
+			PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (output->anim_shm == MAP_FAILED) die("mmap:");
+		fcntl(fd, F_ADD_SEALS,
+			F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
+
+		struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, output->size);
+		output->anim_buf = wl_shm_pool_create_buffer(pool, 0,
+			output->width, output->height,
+			output->stride, WL_SHM_FORMAT_ARGB8888);
+		wl_shm_pool_destroy(pool);
+		close(fd);
 	}
 
 	animating = 1;

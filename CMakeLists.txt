@@ -36,7 +36,7 @@ if(ipo_supported)
 endif()
 
 # ---- Add SAIL as a subproject ----
-add_subdirectory(sail EXCLUDE_FROM_ALL)
+add_subdirectory(sail)
 
 # ---- Find Wayland dependencies ----
 find_package(PkgConfig REQUIRED)
@@ -132,6 +132,9 @@ foreach(CODEC_DIR ${SAIL_CODEC_SUBDIRS})
         endif()
     endif()
 endforeach()
+
+# ---- Install wawa to ${CMAKE_INSTALL_PREFIX}/bin ----
+install(TARGETS wawa RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # ---- Respect BUILD_SHARED_LIBS default ----
 if(NOT DEFINED BUILD_SHARED_LIBS)

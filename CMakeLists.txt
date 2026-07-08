@@ -18,6 +18,10 @@ set(BUILD_TESTING            OFF CACHE BOOL "Disable SAIL tests")
 # ldconfig resolves the standard /usr/lib/ paths at runtime.
 set(CMAKE_SKIP_INSTALL_RPATH ON)
 
+# ---- Strip symbols in Release mode (PKGBUILD uses None + makepkg strips) ----
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE   "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -s")
+set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -s")
+
 # ---- Machine-specific optimization for ALL targets including SAIL ----
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
 

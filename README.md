@@ -1,7 +1,7 @@
 # wawa
 
 A simple, hackable, and distinctive Wayland wallpaper setter utilizing
-`stb_image` that targets `wlr-layer-shell` supported compositors, featuring
+[SAIL](https://github.com/HappySeaFox/sail) that targets `wlr-layer-shell` supported compositors, featuring
 tiling, spreading across monitors, along with fill, fit and stretching the
 wallpaper, with less SLOC than your average wallpaper setter.
 

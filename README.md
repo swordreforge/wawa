@@ -5,12 +5,40 @@ A simple, hackable, and distinctive Wayland wallpaper setter utilizing
 tiling, spreading across monitors, along with fill, fit and stretching the
 wallpaper, with less SLOC than your average wallpaper setter.
 
+This is a **fork** by [swordreforge](https://github.com/swordreforge) of the
+original [wawa](https://github.com/sewn/wawa) by **sewn** (sewnie), with
+significant enhancements (see [New Features](#new-features) below).
+
 In wawa, the image is loaded only for monitors that need it, and is immediately
 freed when all monitors have been configured; this keeps the memory usage of
 wawa extremely low (7x less than wbg, almost 24x less than swaybg), which may
 be a performance hit if youre constantly resizing the monitor. Please open an
 issue if this concerns you, in which case a specific flag can be added to keep
 the image in memory, unless it is a design flaw.
+
+## New Features (fork)
+
+This fork adds the following enhancements over the original wawa:
+
+- **`--random <directory>`** — pick a random image from a directory on startup
+  (and on each interval tick when combined with `--interval`)
+- **`--interval <seconds>`** — automatically cycle wallpapers on a timer
+- **`--smart[=<tolerance>]`** — aspect-ratio-aware random selection; skips
+  images whose aspect ratio deviates from the screen's by more than the given
+  tolerance (default 0.1). Use with `--random` for wallpaper slideshows that
+  won't pick ultra-wide or portrait images on the wrong monitor.
+- **Cross-fade animation** — smooth transitions between wallpapers when using
+  `--interval` + `--random`
+- **Dynamic codec loading** — SAIL codecs are built as standalone `.so`
+  plugins loaded via `dlopen` at runtime; unused codecs never touch memory
+- **LTO + `-march=native`** — link-time optimization and machine-specific
+  tuning applied globally (wawa + SAIL)
+- **Bundled SAIL** — SAIL is embedded as a subproject, stripped of tests,
+  tools, bindings, and non-essential bloat
+- **AUR package** — `PKGBUILD` for `wawa-git` with proper optdepends for
+  optional codecs (HEIF, JPEG XL, OpenEXR, RAW, JPEG2000, SVG)
+- **Bugfixes** — opaque alpha at SAIL pixel level, letterbox garbage fix,
+  missing `wl_surface_damage` buffer, conditional SHM pre-allocation
 
 ## Comparison
 
@@ -43,6 +71,17 @@ sudo cmake --install build
 # Or build the AUR package
 makepkg -si
 ```
+
+## Authors
+
+- **sewn** (sewnie) — original author
+- **[swordreforge](https://github.com/swordreforge)** — contributor, fork
+  maintainer (dynamic codec loading, `--random`, `--interval`, `--smart`,
+  cross-fade, AUR packaging, bundled SAIL, optimizations)
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 [swaybg]: https://github.com/swaywm/swaybg
 [wbg]: https://codeberg.org/dnkl/wbg

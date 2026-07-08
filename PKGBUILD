@@ -1,9 +1,9 @@
-# Maintainer: Your Name <your@email>
-# Contributor: Your Name <your@email>
+# Maintainer: swordreforge
+# Contributor: sewnie <sewn@disroot.org>
 
 pkgname=wawa-git
 _pkgname=wawa
-pkgver=r48.37cb664
+pkgver=r53.cae4003
 pkgrel=1
 pkgdesc="A simple, hackable, and distinctive Wayland wallpaper setter — wlr-layer-shell based, SAIL-powered"
 arch=('x86_64')

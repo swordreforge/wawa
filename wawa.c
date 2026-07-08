@@ -15,9 +15,7 @@
 #include <unistd.h>
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
-#ifdef __linux__
-#include <linux/memfd.h>
-#endif
+#include <gbm.h>
 
 #include <sail/sail.h>
 #include <sail-manip/sail-manip.h>
@@ -25,6 +23,7 @@
 #include "stb_image_resize2.h"
 
 #include "wlr-layer-shell-unstable-v1-protocol.h"
+#include "linux-dmabuf-unstable-v1-protocol.h"
 
 #define MAX(A, B) ((A) > (B) ? (A) : (B))
 #define MIN(A, B) ((A) < (B) ? (A) : (B))
@@ -45,8 +44,9 @@ struct output {
 	struct wl_callback *frame_cb;
 	unsigned char *anim_old, *anim_new;
 	int anim_left;
-	struct wl_buffer *anim_buf;  /* pre-allocated SHM buffer (avoid per-frame memfd) */
-	void *anim_shm;              /* persistent mmap of anim_buf's backing memory */
+	struct wl_buffer *anim_buf;  /* pre-allocated DMA-BUF wl_buffer (avoid per-frame alloc) */
+	void *anim_shm;              /* persistent mmap of DMA-BUF backing memory */
+	struct gbm_bo *anim_bo;      /* pre-allocated GBM BO for DMA-BUF */
 
 	struct wl_list link;
 };
@@ -59,8 +59,10 @@ struct rect {
 static struct wl_display *display;
 static struct wl_registry *registry;
 static struct wl_compositor *compositor;
-static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
+static struct zwp_linux_dmabuf_v1 *linux_dmabuf;
+static struct gbm_device *gbm_dev;
+static int drm_fd = -1;
 static struct wl_list outputs;
 
 struct {
@@ -328,30 +330,22 @@ output_load_image(struct output *output)
 		return output->anim_buf;
 	}
 
-	int fd = -1;
-	struct wl_shm_pool *shm_pool;
-	struct wl_buffer *buffer;
+	/* Allocate DMA-BUF — zero compositor-side copy on scanout */
+	struct gbm_bo *bo = gbm_bo_create(gbm_dev,
+		output->width, output->height,
+		GBM_FORMAT_ARGB8888,
+		GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
+	if (!bo) die("gbm_bo_create:");
 
-	fd = memfd_create("drwbuf-shm-buffer-pool",
-		MFD_CLOEXEC | MFD_ALLOW_SEALING 
-	#ifdef __linux__
-		| MFD_NOEXEC_SEAL
-	#endif
-	);
-	if (fd < 0) die("memfd_create:");
+	int fd = gbm_bo_get_fd(bo);
+	if (fd < 0) die("gbm_bo_get_fd:");
 
-	if ((ftruncate(fd, output->size)) < 0) die("ftruncate:");
+	uint32_t bo_stride = gbm_bo_get_stride(bo);
+	output->stride = bo_stride;
+	output->size = bo_stride * output->height;
 
 	data = mmap(NULL, output->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (data == MAP_FAILED) die("mmap:");
-
-	fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
-
-	shm_pool = wl_shm_create_pool(shm, fd, output->size);
-	buffer = wl_shm_pool_create_buffer(shm_pool, 0,
-		output->width, output->height, output->stride, WL_SHM_FORMAT_ARGB8888);
-	wl_shm_pool_destroy(shm_pool);
-	close(fd);
+	if (data == MAP_FAILED) die("mmap dma-buf:");
 
 	if (output->anim_left > 0) {
 		/* cross-fade blend (fallback, no pre-allocated buffer) */
@@ -371,6 +365,16 @@ output_load_image(struct output *output)
 	}
 
 	munmap(data, output->size);
+
+	struct zwp_linux_buffer_params_v1 *params =
+		zwp_linux_dmabuf_v1_create_params(linux_dmabuf);
+	zwp_linux_buffer_params_v1_add(params, fd, 0 /* plane */,
+		0 /* offset */, 0 /* stride_hi */, bo_stride, 0 /* modifier_hi */);
+	struct wl_buffer *buffer = zwp_linux_buffer_params_v1_create_immed(
+		params, output->width, output->height,
+		GBM_FORMAT_ARGB8888, 0 /* flags */);
+	close(fd);
+	gbm_bo_destroy(bo);
 	return buffer;
 }
 
@@ -448,6 +452,9 @@ layer_surface_handle_closed(void *data, struct zwlr_layer_surface_v1 *surface)
 	}
 	if (output->anim_buf) {
 		wl_buffer_destroy(output->anim_buf);
+	}
+	if (output->anim_bo) {
+		gbm_bo_destroy(output->anim_bo);
 	}
 	free(output->anim_old);
 	free(output->anim_new);
@@ -575,6 +582,10 @@ end_transition(void)
 			wl_buffer_destroy(output->anim_buf);
 			output->anim_buf = NULL;
 		}
+		if (output->anim_bo) {
+			gbm_bo_destroy(output->anim_bo);
+			output->anim_bo = NULL;
+		}
 		free(output->anim_old);
 		free(output->anim_new);
 		output->anim_old = NULL;
@@ -675,10 +686,41 @@ start_transition(void)
 		free(old_path);
 	}
 
-	/* pre-resize old and new into each output's animation buffers */
+	/* Pre-allocate per-output DMA-BUF buffers for the animation frames */
 	wl_list_for_each(output, &outputs, link) {
 		if (!output->configured)
 			continue;
+
+		/* Allocate GBM BO first — this sets the true stride, which
+		 * must match what we pass to the compositor via linux-dmabuf. */
+		struct gbm_bo *bo = gbm_bo_create(gbm_dev,
+			output->width, output->height,
+			GBM_FORMAT_ARGB8888,
+			GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
+		if (!bo) die("gbm_bo_create:");
+
+		int fd = gbm_bo_get_fd(bo);
+		if (fd < 0) die("gbm_bo_get_fd:");
+
+		uint32_t bo_stride = gbm_bo_get_stride(bo);
+		output->stride = bo_stride;
+		output->size = bo_stride * output->height;
+
+		output->anim_shm = mmap(NULL, output->size,
+			PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (output->anim_shm == MAP_FAILED) die("mmap dma-buf:");
+
+		struct zwp_linux_buffer_params_v1 *params =
+			zwp_linux_dmabuf_v1_create_params(linux_dmabuf);
+		zwp_linux_buffer_params_v1_add(params, fd, 0,
+			0, 0, bo_stride, 0);
+		output->anim_buf = zwp_linux_buffer_params_v1_create_immed(
+			params, output->width, output->height,
+			GBM_FORMAT_ARGB8888, 0);
+		close(fd);
+		output->anim_bo = bo;
+
+		/* Now allocate pre-rendered frames using the correct stride */
 		output->anim_old = malloc(output->size);
 		output->anim_new = malloc(output->size);
 		if (!output->anim_old || !output->anim_new)
@@ -688,33 +730,6 @@ start_transition(void)
 		resize_to(output->anim_new, output,
 			next_image.data, next_image.width, next_image.height);
 		output->anim_left = FADE_STEPS;
-	}
-
-	/* Pre-allocate SHM buffers for the animation — eliminates
-	 * memfd_create/ftruncate/mmap/shm_pool per frame (8+ syscalls). */
-	wl_list_for_each(output, &outputs, link) {
-		if (!output->configured)
-			continue;
-		int fd = memfd_create("wawa-anim",
-			MFD_CLOEXEC | MFD_ALLOW_SEALING
-		#ifdef __linux__
-			| MFD_NOEXEC_SEAL
-		#endif
-		);
-		if (fd < 0) die("memfd_create:");
-		if (ftruncate(fd, output->size) < 0) die("ftruncate:");
-		output->anim_shm = mmap(NULL, output->size,
-			PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (output->anim_shm == MAP_FAILED) die("mmap:");
-		fcntl(fd, F_ADD_SEALS,
-			F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
-
-		struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, output->size);
-		output->anim_buf = wl_shm_pool_create_buffer(pool, 0,
-			output->width, output->height,
-			output->stride, WL_SHM_FORMAT_ARGB8888);
-		wl_shm_pool_destroy(pool);
-		close(fd);
 	}
 
 	animating = 1;
@@ -779,8 +794,8 @@ registry_handle_global(void *data, struct wl_registry *registry,
 
 	if (!strcmp(interface, wl_compositor_interface.name))
 		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 1);
- 	else if (!strcmp(interface, wl_shm_interface.name))
-		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+	else if (!strcmp(interface, zwp_linux_dmabuf_v1_interface.name))
+		linux_dmabuf = wl_registry_bind(registry, name, &zwp_linux_dmabuf_v1_interface, 4);
 	else if (!strcmp(interface, zwlr_layer_shell_v1_interface.name))
 		layer_shell = wl_registry_bind(registry, name,
 			&zwlr_layer_shell_v1_interface, 1);
@@ -890,6 +905,11 @@ main(int argc, char *argv[])
 	wl_display_roundtrip(display);
 	wl_display_roundtrip(display); /* output handlers */
 
+	/* Initialize GBM/DRM for DMA-BUF allocation */
+	drm_fd = open("/dev/dri/card0", O_RDWR);
+	if (drm_fd < 0) die("open /dev/dri/card0:");
+	gbm_dev = gbm_create_device(drm_fd);
+	if (!gbm_dev) die("gbm_create_device:");
 
 	/* Flush the initial surface commits queued in output_setup_callback.
 	 * Without this, the compositor never receives the layer surface
@@ -897,8 +917,8 @@ main(int argc, char *argv[])
 	 * image stuck in the queue indefinitely. */
 	wl_display_flush(display);
 
-	if (!compositor || !layer_shell || !shm)
-		die("bad compositor available");
+	if (!compositor || !layer_shell || !linux_dmabuf)
+		die("bad compositor available (need linux-dmabuf v4)");
 
 	if (interval_ms > 0)
 		next_switch_ms = now_ms() + interval_ms;

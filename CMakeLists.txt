@@ -37,6 +37,11 @@ execute_process(
 set(WAYLAND_SCANNER_EXE      "${_wayland_scanner_exe}")
 set(WAYLAND_PROTOCOLS_DIR    "${_wayland_protocols_dir}")
 
+# ---- Find GBM/DRM for DMA-BUF ----
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GBM    REQUIRED IMPORTED_TARGET gbm)
+pkg_check_modules(DRM    REQUIRED IMPORTED_TARGET libdrm)
+
 # ---- Generate Wayland protocol stubs ----
 set(PROTOCOL_SRCS
     ${CMAKE_CURRENT_BINARY_DIR}/wlr-layer-shell-unstable-v1-protocol.c
@@ -71,6 +76,24 @@ add_custom_command(
     DEPENDS "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml"
 )
 
+# linux-dmabuf (from system-installed wayland-protocols, used for DMA-BUF buffers)
+set(LINUX_DMABUF_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml")
+add_custom_command(
+    OUTPUT
+        ${CMAKE_CURRENT_BINARY_DIR}/linux-dmabuf-unstable-v1-protocol.h
+        ${CMAKE_CURRENT_BINARY_DIR}/linux-dmabuf-unstable-v1-protocol.c
+    COMMAND ${WAYLAND_SCANNER_EXE} client-header
+        "${LINUX_DMABUF_XML}"
+        "${CMAKE_CURRENT_BINARY_DIR}/linux-dmabuf-unstable-v1-protocol.h"
+    COMMAND ${WAYLAND_SCANNER_EXE} private-code
+        "${LINUX_DMABUF_XML}"
+        "${CMAKE_CURRENT_BINARY_DIR}/linux-dmabuf-unstable-v1-protocol.c"
+    DEPENDS "${LINUX_DMABUF_XML}"
+)
+list(APPEND PROTOCOL_SRCS
+    ${CMAKE_CURRENT_BINARY_DIR}/linux-dmabuf-unstable-v1-protocol.c
+)
+
 # ---- Build wawa ----
 add_executable(wawa
     wawa.c
@@ -85,6 +108,8 @@ target_link_libraries(wawa PRIVATE
     sail             # SAIL image loading library
     sail-manip       # SAIL pixel format conversion (RGBA)
     PkgConfig::WAYLAND_CLIENT
+    PkgConfig::GBM
+    PkgConfig::DRM
     m
 )
 

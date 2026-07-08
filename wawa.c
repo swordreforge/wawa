@@ -323,6 +323,26 @@ now_ms(void)
 	return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* Integer fixed-point cross-fade blend (avoids per-pixel float math).
+ * w = anim_left * 256 / FADE_STEPS gives the old-image weight in 1/256 units.
+ * Each channel: (old * w + new * (256-w) + 128) >> 8, rounded half-up.
+ * Alpha forced to 255 — wallpaper must never carry transparency. */
+static void
+blend_crossfade(unsigned char *restrict dst,
+                const unsigned char *restrict old,
+                const unsigned char *restrict new,
+                size_t size, int anim_left)
+{
+	uint16_t w = (uint16_t)anim_left * 256 / FADE_STEPS;
+	uint16_t w_new = (uint16_t)(256 - w);
+	for (size_t i = 0; i < size; i += 4) {
+		dst[i+0] = (uint8_t)((old[i+0] * w + new[i+0] * w_new + 128) >> 8);
+		dst[i+1] = (uint8_t)((old[i+1] * w + new[i+1] * w_new + 128) >> 8);
+		dst[i+2] = (uint8_t)((old[i+2] * w + new[i+2] * w_new + 128) >> 8);
+		dst[i+3] = 255;
+	}
+}
+
 static struct wl_buffer *
 output_load_image(struct output *output)
 {
@@ -330,17 +350,9 @@ output_load_image(struct output *output)
 
 	if (output->anim_left > 0 && output->anim_buf) {
 		/* Fast path — use pre-allocated SHM buffer, zero syscalls */
-		data = output->anim_shm;
-		float a = 1.0f - (float)output->anim_left / FADE_STEPS;
-		for (int i = 0; i < output->size; i += 4) {
-			data[i+0] = output->anim_old[i+0] * (1.0f - a) +
-			            output->anim_new[i+0] * a;
-			data[i+1] = output->anim_old[i+1] * (1.0f - a) +
-			            output->anim_new[i+1] * a;
-			data[i+2] = output->anim_old[i+2] * (1.0f - a) +
-			            output->anim_new[i+2] * a;
-			data[i+3] = 255;
-		}
+		blend_crossfade(output->anim_shm, output->anim_old,
+		                output->anim_new, output->size,
+		                output->anim_left);
 		return output->anim_buf;
 	}
 
@@ -370,17 +382,9 @@ output_load_image(struct output *output)
 	close(fd);
 
 	if (output->anim_left > 0) {
-		/* cross-fade blend (fallback, no pre-allocated buffer) */
-		float a = 1.0f - (float)output->anim_left / FADE_STEPS;
-		for (int i = 0; i < output->size; i += 4) {
-			data[i+0] = output->anim_old[i+0] * (1.0f - a) +
-			            output->anim_new[i+0] * a;
-			data[i+1] = output->anim_old[i+1] * (1.0f - a) +
-			            output->anim_new[i+1] * a;
-			data[i+2] = output->anim_old[i+2] * (1.0f - a) +
-			            output->anim_new[i+2] * a;
-			data[i+3] = 255;
-		}
+		blend_crossfade(data, output->anim_old,
+		                output->anim_new, output->size,
+		                output->anim_left);
 	} else {
 		image_modify(data, output);
 		/* Force full opacity — many image formats carry RGBA
@@ -616,8 +620,9 @@ end_transition(void)
 {
 	struct output *output;
 
-	/* free old image */
-	sail_destroy_image(image.sail_img);
+	/* free old image (may be NULL if already freed by start_transition) */
+	if (image.sail_img)
+		sail_destroy_image(image.sail_img);
 
 	/* swap next into current */
 	image.sail_img = next_image.sail_img;
@@ -652,14 +657,6 @@ end_transition(void)
 
 	/* flush final 100% new frame to erase any blend residue */
 	render_static_frame();
-
-	/* Free current image data — next transition will reload from image.path.
-	 * This keeps steady-state memory near zero in --interval mode. */
-	if (image.dir) {
-		sail_destroy_image(image.sail_img);
-		image.data = NULL;
-		image.sail_img = NULL;
-	}
 }
 
 /* Render one frame of the cross-fade transition for all outputs */
@@ -719,8 +716,6 @@ start_transition(void)
 
 	/* pick and load new image, update image.path */
 	if (image.dir) {
-		/* Save old path for reloading the 'old' image if it was freed
-		 * after the previous transition (steady-state memory saving). */
 		char *old_path = image.path;
 
 		/* Use the first output's dimensions for smart probing. */
@@ -731,25 +726,6 @@ start_transition(void)
 		}
 		load_next_image(image.path);
 
-		/* If image.data was freed (end_transition freed it), reload the
-		 * old image so we can pre-render anim_old for cross-fade. */
-		if (!image.data && old_path) {
-			struct sail_image *img = NULL;
-			sail_status_t st;
-			st = sail_load_from_file(old_path, &img);
-			if (st == SAIL_OK) {
-				if (img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_BGRA) {
-					struct sail_image *conv = NULL;
-					st = sail_convert_image(img, SAIL_PIXEL_FORMAT_BPP32_BGRA, &conv);
-					if (st == SAIL_OK) { sail_destroy_image(img); img = conv; }
-				}
-				sail_force_opaque(img);
-				image.sail_img = img;
-				image.data = img->pixels;
-				image.width = img->width;
-				image.height = img->height;
-			}
-		}
 		free(old_path);
 	}
 
@@ -775,36 +751,42 @@ start_transition(void)
 		output->anim_left = FADE_STEPS;
 	}
 
+	/* Free current image now that anim_old has been pre-rendered.
+	 * Deferring the free here (instead of end_transition) avoids
+	 * reloading the image from disk on the next transition tick. */
+	if (image.dir) {
+		sail_destroy_image(image.sail_img);
+		image.data = NULL;
+		image.sail_img = NULL;
+	}
+
 	/* Pre-allocate SHM buffers for the animation — eliminates
 	 * memfd_create/ftruncate/mmap/shm_pool per frame (8+ syscalls).
-	 * Only for modes that fill the entire output (no letterbox).
-	 * fit mode creates per-frame buffers because letterbox areas
-	 * trigger compositor caching issues with reused buffers. */
-	if (image_modify != image_fit) {
-		wl_list_for_each(output, &outputs, link) {
-			if (!output->configured)
-				continue;
-			int fd = memfd_create("wawa-anim",
-				MFD_CLOEXEC | MFD_ALLOW_SEALING
-			#ifdef __linux__
-				| MFD_NOEXEC_SEAL
-			#endif
-			);
-			if (fd < 0) die("memfd_create:");
-			if (ftruncate(fd, output->size) < 0) die("ftruncate:");
-			output->anim_shm = mmap(NULL, output->size,
-				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-			if (output->anim_shm == MAP_FAILED) die("mmap:");
-			fcntl(fd, F_ADD_SEALS,
-				F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
+	 * wl_surface_damage on every frame ensures the compositor picks
+	 * up all pixel changes, including letterbox areas in fit mode. */
+	wl_list_for_each(output, &outputs, link) {
+		if (!output->configured)
+			continue;
+		int fd = memfd_create("wawa-anim",
+			MFD_CLOEXEC | MFD_ALLOW_SEALING
+		#ifdef __linux__
+			| MFD_NOEXEC_SEAL
+		#endif
+		);
+		if (fd < 0) die("memfd_create:");
+		if (ftruncate(fd, output->size) < 0) die("ftruncate:");
+		output->anim_shm = mmap(NULL, output->size,
+			PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (output->anim_shm == MAP_FAILED) die("mmap:");
+		fcntl(fd, F_ADD_SEALS,
+			F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
 
-			struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, output->size);
-			output->anim_buf = wl_shm_pool_create_buffer(pool, 0,
-				output->width, output->height,
-				output->stride, WL_SHM_FORMAT_ARGB8888);
-			wl_shm_pool_destroy(pool);
-			close(fd);
-		}
+		struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, output->size);
+		output->anim_buf = wl_shm_pool_create_buffer(pool, 0,
+			output->width, output->height,
+			output->stride, WL_SHM_FORMAT_ARGB8888);
+		wl_shm_pool_destroy(pool);
+		close(fd);
 	}
 
 	animating = 1;

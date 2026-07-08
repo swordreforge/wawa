@@ -3,7 +3,7 @@
 
 pkgname=wawa-git
 _pkgname=wawa
-pkgver=r46.3f85c0e
+pkgver=r48.37cb664
 pkgrel=1
 pkgdesc="A simple, hackable, and distinctive Wayland wallpaper setter — wlr-layer-shell based, SAIL-powered"
 arch=('x86_64')
@@ -58,8 +58,8 @@ build() {
 
 check() {
     cd "$srcdir/${_pkgname}"
-    # Verify the binary links cleanly (no build-tree references)
-    ldd build/wawa | grep -q "build/" && return 1 || return 0
+    # Verify the binary can at least print its usage (no crash on startup)
+    ./build/wawa 2>&1 | grep -q "usage:" || return 1
 }
 
 package() {

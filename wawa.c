@@ -142,7 +142,8 @@ die(const char *fmt, ...)
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
 
-	if (fmt[0] && fmt[strlen(fmt)-1] == ':') {
+	size_t len = strlen(fmt);
+	if (len > 0 && fmt[len - 1] == ':') {
 		fputc(' ', stderr);
 		perror(NULL);
 	} else {

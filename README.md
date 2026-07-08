@@ -26,5 +26,23 @@ for those who want to tile or etc.
 
 No other wallpaper setter supports tiling out of the box.
 
+## Building
+
+```bash
+# Dependencies (Arch Linux)
+sudo pacman -S cmake wayland wayland-protocols \
+  libpng libjpeg-turbo libwebp libtiff giflib libavif
+
+# Build (Release)
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+
+# Install
+sudo cmake --install build
+
+# Or build the AUR package
+makepkg -si
+```
+
 [swaybg]: https://github.com/swaywm/swaybg
 [wbg]: https://codeberg.org/dnkl/wbg

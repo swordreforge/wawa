@@ -7,7 +7,7 @@ pkgver=r37.3c30a5f
 pkgrel=1
 pkgdesc="A simple, hackable, and distinctive Wayland wallpaper setter — wlr-layer-shell based, SAIL-powered"
 arch=('x86_64')
-url="https://codeberg.org/sewn/wawa"
+url="https://github.com/swordreforge/wawa"
 license=('MIT')
 depends=(
     'wayland'
@@ -31,7 +31,7 @@ optdepends=(
 )
 provides=("${_pkgname}=${pkgver}")
 conflicts=("${_pkgname}")
-source=("git+https://codeberg.org/sewn/wawa.git")
+source=("git+https://github.com/swordreforge/wawa.git")
 sha256sums=('SKIP')
 
 pkgver() {

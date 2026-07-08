@@ -1,6 +1,7 @@
 /* See LICENSE file for copyright and license details. */
 #include <byteswap.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <math.h>
@@ -301,10 +302,10 @@ set_image_modify(const char *mode)
 static void
 sail_force_opaque(struct sail_image *img)
 {
-	unsigned char *pixels = img->pixels;
-	size_t n = (size_t)img->width * img->height * 4;
-	for (size_t i = 3; i < n; i += 4)
-		pixels[i] = 255;
+	uint32_t *p = (uint32_t *)img->pixels;
+	size_t npix = (size_t)img->width * img->height;
+	for (size_t i = 0; i < npix; i++)
+		p[i] |= 0xFF000000;
 }
 
 /* Apply current image_modify mode using a source other than the global image */
@@ -984,54 +985,61 @@ main(int argc, char *argv[])
 	 * and drives cross-fade animation */
 	while (1) {
 		int timeout = -1;
-		uint64_t now = now_ms();
+		uint64_t now;
 
-		if (animating) {
-			/* during transition, check if all outputs are ready */
-			bool all_ready = true;
-			struct output *o;
-			wl_list_for_each(o, &outputs, link) {
-				if (o->frame_cb != NULL) {
-					all_ready = false;
-					break;
+		if (animating || interval_ms > 0) {
+			now = now_ms();
+
+			if (animating) {
+				bool all_ready = true;
+				struct output *o;
+				wl_list_for_each(o, &outputs, link) {
+					if (o->frame_cb != NULL) {
+						all_ready = false;
+						break;
+					}
 				}
-			}
-			if (all_ready) {
-				if (anim_step >= FADE_STEPS) {
-					end_transition();
-					if (interval_ms > 0)
-						next_switch_ms = now_ms() + interval_ms;
-				} else {
-					render_transition_frame();
+				if (all_ready) {
+					if (anim_step >= FADE_STEPS) {
+						end_transition();
+						if (interval_ms > 0)
+							next_switch_ms = now_ms() + interval_ms;
+					} else {
+						render_transition_frame();
+					}
+					continue;
 				}
+			} else if (interval_ms > 0 && next_switch_ms <= now) {
+				start_transition();
 				continue;
+			} else if (interval_ms > 0) {
+				int remaining = (int)(next_switch_ms - now);
+				timeout = (remaining > 0) ? remaining : 0;
 			}
-			timeout = 16; /* ~60 fps poll while waiting for frame cb */
-		} else if (interval_ms > 0 && next_switch_ms <= now) {
-			start_transition();
-			continue;
-		} else if (interval_ms > 0) {
-			int remaining = (int)(next_switch_ms - now);
-			timeout = (remaining > 0) ? remaining : 0;
 		}
+
+		while (wl_display_prepare_read(display) < 0)
+			wl_display_dispatch_pending(display);
 
 		struct pollfd pfd = {
 			.fd = wl_display_get_fd(display),
 			.events = POLLIN
 		};
-		int ret = poll(&pfd, 1, timeout);
 
-		if (ret > 0 && (pfd.revents & POLLIN)) {
-			if (wl_display_dispatch(display) < 0)
-				break;
-			/* Flush outgoing requests queued by event handlers
-			 * (e.g. wl_surface_commit in configure handler).
-			 * Without this, commits pile up until the next
-			 * dispatch call, which may be seconds away. */
-			wl_display_flush(display);
-		} else if (ret < 0) {
+		int ret;
+		do {
+			ret = poll(&pfd, 1, timeout);
+		} while (ret < 0 && errno == EINTR);
+
+		if (ret < 0) {
+			wl_display_cancel_read(display);
 			break;
 		}
+
+		wl_display_read_events(display);
+		if (wl_display_dispatch_pending(display) < 0)
+			break;
+		wl_display_flush(display);
 	}
 
 	return EXIT_SUCCESS;

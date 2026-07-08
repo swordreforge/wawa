@@ -1,6 +1,8 @@
 /* See LICENSE file for copyright and license details. */
 #include <byteswap.h>
+#include <dirent.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -8,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
@@ -72,6 +75,37 @@ static void noop_done(void *data, struct wl_output *wl_output) {}
 static void noop_scale(void *data, struct wl_output *wl_output, int32_t factor) {}
 static void noop_name(void *data, struct wl_output *wl_output, const char *name) {}
 static void noop_description(void *data, struct wl_output *wl_output, const char *description) {}
+
+static const char *supported_exts[] = {
+	"png", "jpg", "jpeg", "webp", "bmp", "gif",
+	"tiff", "tif", "pcx", "tga", "ico", "cur",
+	"jp2", "j2k", "avif", "heif", "heic",
+	"jxl", "psd", "qoi", "hdr", "exr",
+	"svg", "xbm", "xpm", "xwd",
+	"pnm", "pgm", "ppm", "pbm", "pam",
+	"fli", "flc", "wal",
+	NULL
+};
+
+static int
+scan_filter(const struct dirent *entry)
+{
+	const char *dot;
+	size_t i;
+
+	if (entry->d_type != DT_REG && entry->d_type != DT_LNK)
+		return 0;
+
+	dot = strrchr(entry->d_name, '.');
+	if (!dot || !dot[1])
+		return 0;
+	dot++;
+
+	for (i = 0; supported_exts[i] != NULL; i++)
+		if (!strcasecmp(dot, supported_exts[i]))
+			return 1;
+	return 0;
+}
 
 static void
 die(const char *fmt, ...)
@@ -218,6 +252,17 @@ image_spread(unsigned char *dst, struct output *output)
 		image.data + (crop.y * image.width + crop.x) * 4,
 		crop.width, crop.height, image.width * 4,
 		dst, output->width, output->height, output->stride, 4);
+}
+
+static void
+set_image_modify(const char *mode)
+{
+	if      (!strcmp(mode, "stretch")) image_modify = image_stretch;
+	else if (!strcmp(mode, "fit"))     image_modify = image_fit;
+	else if (!strcmp(mode, "fill"))    image_modify = image_fill;
+	else if (!strcmp(mode, "tile"))    image_modify = image_tile;
+	else if (!strcmp(mode, "spread"))  image_modify = image_spread;
+	else die("unknown mode: %s (use fill|fit|spread|stretch|tile)", mode);
 }
 
 static struct wl_buffer *
@@ -428,22 +473,52 @@ static const struct wl_registry_listener registry_listener = {
 int
 main(int argc, char *argv[])
 {
-	switch (argc) {
-	case 2:
-		if (!(parse_color(argv[1]))) goto usage;
-		image_modify = image_color;
-		break;
-	case 3:
-		if (!strcmp(argv[1], "stretch")) image_modify = image_stretch;
-		else if (!strcmp(argv[1], "fit")) image_modify = image_fit;
-		else if (!strcmp(argv[1], "fill")) image_modify = image_fill;
-		else if (!strcmp(argv[1], "tile")) image_modify = image_tile;
-		else if (!strcmp(argv[1], "spread")) image_modify = image_spread;
-		else goto usage;
+	int random_flag = 0, opt;
 
-		image.path = argv[2];
-		break;
-	default:
+	static const struct option long_opts[] = {
+		{"random", no_argument, NULL, 'r'},
+		{0, 0, 0, 0}
+	};
+
+	while ((opt = getopt_long(argc, argv, "r", long_opts, NULL)) != -1) {
+		switch (opt) {
+		case 'r':
+			random_flag = 1;
+			break;
+		default:
+			goto usage;
+		}
+	}
+
+	if (random_flag) {
+		if (optind + 2 != argc)
+			die("usage: %s --random fill|fit|spread|stretch|tile <directory>",
+				argv[0]);
+
+		set_image_modify(argv[optind]);
+
+		struct dirent **namelist;
+		int n = scandir(argv[optind + 1], &namelist, scan_filter, alphasort);
+		if (n < 0) die("scandir %s:", argv[optind + 1]);
+		if (n == 0) die("no supported images in %s", argv[optind + 1]);
+
+		srand(time(NULL) ^ (getpid() << 16));
+		int idx = rand() % n;
+
+		if (asprintf(&image.path, "%s/%s",
+			argv[optind + 1], namelist[idx]->d_name) < 0)
+			die("asprintf:");
+
+		for (int i = 0; i < n; i++)
+			free(namelist[i]);
+		free(namelist);
+	} else if (optind + 1 == argc) {
+		if (!parse_color(argv[optind])) goto usage;
+		image_modify = image_color;
+	} else if (optind + 2 == argc) {
+		set_image_modify(argv[optind]);
+		image.path = argv[optind + 1];
+	} else {
 		goto usage;
 	}
 
@@ -469,7 +544,7 @@ main(int argc, char *argv[])
 	return EXIT_SUCCESS;
 
 usage:
-	fprintf(stderr, "usage: %s fill|fit|spread|stretch|tile filename\n"
+	fprintf(stderr, "usage: %s [--random] fill|fit|spread|stretch|tile <file|directory>\n"
 	                "       %s RRGGBBAA\n",
 	        argv[0], argv[0]);
 	return EXIT_FAILURE;

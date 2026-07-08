@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <math.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -27,6 +28,7 @@
 
 #define MAX(A, B) ((A) > (B) ? (A) : (B))
 #define MIN(A, B) ((A) < (B) ? (A) : (B))
+#define FADE_STEPS 16
 
 struct output {
 	struct wl_output *wl;
@@ -38,6 +40,11 @@ struct output {
 	uint32_t size, stride;
 
 	bool configured;
+
+	/* cross-fade animation state */
+	struct wl_callback *frame_cb;
+	unsigned char *anim_old, *anim_new;
+	int anim_left;
 
 	struct wl_list link;
 };
@@ -56,12 +63,24 @@ static struct wl_list outputs;
 
 struct {
 	char *path;
+	char *dir;       /* directory for re-scanning (--random mode) */
 	struct sail_image *sail_img;
 	int width, height;
 	unsigned char *data;
 } image;
 
 static uint32_t color;
+
+static struct {
+	struct sail_image *sail_img;
+	int width, height;
+	unsigned char *data;
+} next_image;
+
+static int interval_ms;   /* 0 = no interval switching */
+static int animating;     /* non-zero = transition in progress */
+static int anim_step;     /* current frame (0..FADE_STEPS-1) */
+static uint64_t next_switch_ms; /* monotonic ms for next switch */
 
 static void image_fill(unsigned char *dst, struct output *output);
 static void (*image_modify)(unsigned char *, struct output *) = image_fill;
@@ -265,6 +284,26 @@ set_image_modify(const char *mode)
 	else die("unknown mode: %s (use fill|fit|spread|stretch|tile)", mode);
 }
 
+/* Apply current image_modify mode using a source other than the global image */
+static void
+resize_to(unsigned char *dst, struct output *output,
+          unsigned char *src, int sw, int sh)
+{
+	int old_w = image.width, old_h = image.height;
+	unsigned char *old_data = image.data;
+	image.width = sw; image.height = sh; image.data = src;
+	image_modify(dst, output);
+	image.width = old_w; image.height = old_h; image.data = old_data;
+}
+
+static uint64_t
+now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static struct wl_buffer *
 output_load_image(struct output *output)
 {
@@ -294,7 +333,22 @@ output_load_image(struct output *output)
 	wl_shm_pool_destroy(shm_pool);
 	close(fd);
 
-	image_modify(data, output);
+	if (output->anim_left > 0) {
+		/* cross-fade blend */
+		float a = 1.0f - (float)output->anim_left / FADE_STEPS;
+		for (int i = 0; i < output->size; i += 4) {
+			data[i+0] = output->anim_old[i+0] * (1.0f - a) +
+			            output->anim_new[i+0] * a;
+			data[i+1] = output->anim_old[i+1] * (1.0f - a) +
+			            output->anim_new[i+1] * a;
+			data[i+2] = output->anim_old[i+2] * (1.0f - a) +
+			            output->anim_new[i+2] * a;
+			data[i+3] = output->anim_old[i+3] * (1.0f - a) +
+			            output->anim_new[i+3] * a;
+		}
+	} else {
+		image_modify(data, output);
+	}
 
 	/* RGBA->BGRA */
 	for (int i = 0; i < output->size; i += 4) {
@@ -319,29 +373,30 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 	if (output->configured && width == output->width && height == output->height)
 		return;
 
-	if (!image.data && image.path) {
-		struct sail_image *sail_img = NULL;
-		sail_status_t status;
+	if (!image.data) {
+		if (image.path) {
+			struct sail_image *sail_img = NULL;
+			sail_status_t status;
 
-		status = sail_load_from_file(image.path, &sail_img);
-		if (status != SAIL_OK) die("failed to load image");
+			status = sail_load_from_file(image.path, &sail_img);
+			if (status != SAIL_OK) die("failed to load image");
 
-		/* Convert to RGBA if the native format isn't already */
-		if (sail_img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_RGBA) {
-			struct sail_image *converted = NULL;
-			status = sail_convert_image(sail_img, SAIL_PIXEL_FORMAT_BPP32_RGBA, &converted);
-			if (status != SAIL_OK) {
+			if (sail_img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_RGBA) {
+				struct sail_image *converted = NULL;
+				status = sail_convert_image(sail_img, SAIL_PIXEL_FORMAT_BPP32_RGBA, &converted);
+				if (status != SAIL_OK) {
+					sail_destroy_image(sail_img);
+					die("failed to convert image to RGBA");
+				}
 				sail_destroy_image(sail_img);
-				die("failed to convert image to RGBA");
+				sail_img = converted;
 			}
-			sail_destroy_image(sail_img);
-			sail_img = converted;
-		}
 
-		image.sail_img = sail_img;
-		image.data = sail_img->pixels;
-		image.width = sail_img->width;
-		image.height = sail_img->height;
+			image.sail_img = sail_img;
+			image.data = sail_img->pixels;
+			image.width = sail_img->width;
+			image.height = sail_img->height;
+		}
 	}
 
 	output->width = width;
@@ -360,9 +415,14 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 	wl_list_for_each(output, &outputs, link)
 		if (!output->configured) return;
 
-	sail_destroy_image(image.sail_img);
-	image.data = NULL;
-	image.sail_img = NULL;
+	if (interval_ms == 0) {
+		sail_destroy_image(image.sail_img);
+		image.data = NULL;
+		image.sail_img = NULL;
+	}
+
+	if (interval_ms > 0 && !animating)
+		next_switch_ms = now_ms() + interval_ms;
 }
 
 static void
@@ -381,6 +441,172 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 	.configure = layer_surface_handle_configure,
 	.closed = layer_surface_handle_closed,
 };
+
+static void
+frame_handle_done(void *data, struct wl_callback *callback, uint32_t time)
+{
+	struct output *output = data;
+	wl_callback_destroy(callback);
+	output->frame_cb = NULL;
+}
+
+static const struct wl_callback_listener frame_listener = {
+	.done = frame_handle_done,
+};
+
+/* Pick a random image file from directory (re-scans each call) */
+static char *
+pick_random_file(const char *dir)
+{
+	struct dirent **namelist;
+	int n = scandir(dir, &namelist, scan_filter, alphasort);
+	if (n < 0) die("scandir %s:", dir);
+	if (n == 0) die("no supported images in %s", dir);
+
+	int idx = rand() % n;
+	size_t dirlen = strlen(dir);
+	while (dirlen > 1 && dir[dirlen - 1] == '/')
+		dirlen--;
+
+	char *path;
+	if (asprintf(&path, "%.*s/%s", (int)dirlen, dir, namelist[idx]->d_name) < 0)
+		die("asprintf:");
+
+	for (int i = 0; i < n; i++)
+		free(namelist[i]);
+	free(namelist);
+	return path;
+}
+
+/* Load an image file into next_image (RGBA 32bpp) */
+static void
+load_next_image(const char *path)
+{
+	struct sail_image *img = NULL;
+	sail_status_t status;
+
+	status = sail_load_from_file(path, &img);
+	if (status != SAIL_OK)
+		die("failed to load image: %s", path);
+
+	if (img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_RGBA) {
+		struct sail_image *conv = NULL;
+		status = sail_convert_image(img, SAIL_PIXEL_FORMAT_BPP32_RGBA, &conv);
+		if (status != SAIL_OK) {
+			sail_destroy_image(img);
+			die("failed to convert image to RGBA");
+		}
+		sail_destroy_image(img);
+		img = conv;
+	}
+
+	next_image.sail_img = img;
+	next_image.data = img->pixels;
+	next_image.width = img->width;
+	next_image.height = img->height;
+}
+
+/* End transition: swap next_image → image, free old resources */
+static void
+end_transition(void)
+{
+	struct output *output;
+
+	/* free old image */
+	sail_destroy_image(image.sail_img);
+
+	/* swap next into current */
+	image.sail_img = next_image.sail_img;
+	image.data = next_image.data;
+	image.width = next_image.width;
+	image.height = next_image.height;
+	memset(&next_image, 0, sizeof(next_image));
+
+	/* free per-output animation buffers and reset */
+	wl_list_for_each(output, &outputs, link) {
+		free(output->anim_old);
+		free(output->anim_new);
+		output->anim_old = NULL;
+		output->anim_new = NULL;
+		output->anim_left = 0;
+		if (output->frame_cb) {
+			wl_callback_destroy(output->frame_cb);
+			output->frame_cb = NULL;
+		}
+	}
+
+	animating = 0;
+	anim_step = 0;
+}
+
+/* Render one frame of the cross-fade transition for all outputs */
+static void
+render_transition_frame(void)
+{
+	struct output *output;
+
+	wl_list_for_each(output, &outputs, link) {
+		if (output->anim_left <= 0)
+			continue;
+
+		struct wl_buffer *buf = output_load_image(output);
+		wl_surface_attach(output->surface, buf, 0, 0);
+
+		if (output->frame_cb)
+			wl_callback_destroy(output->frame_cb);
+		output->frame_cb = wl_surface_frame(output->surface);
+		wl_callback_add_listener(output->frame_cb, &frame_listener, output);
+
+		wl_surface_commit(output->surface);
+		wl_buffer_destroy(buf);
+
+		output->anim_left--;
+	}
+	anim_step++;
+	wl_display_flush(display);
+}
+
+/* Begin a cross-fade transition from current image to a random one */
+static void
+start_transition(void)
+{
+	char *path = NULL;
+	struct output *output;
+
+	/* ensure we have an image; interval without path is invalid */
+	if (!image.path)
+		return;
+
+	if (next_image.sail_img)
+		end_transition(); /* finish lingering transition */
+
+	/* pick and load new image */
+	if (image.dir) {
+		path = pick_random_file(image.dir);
+		load_next_image(path);
+		free(path);
+	}
+
+	/* pre-resize old and new into each output's animation buffers */
+	wl_list_for_each(output, &outputs, link) {
+		if (!output->configured)
+			continue;
+		output->anim_old = malloc(output->size);
+		output->anim_new = malloc(output->size);
+		if (!output->anim_old || !output->anim_new)
+			die("malloc:");
+		resize_to(output->anim_old, output,
+			image.data, image.width, image.height);
+		resize_to(output->anim_new, output,
+			next_image.data, next_image.width, next_image.height);
+		output->anim_left = FADE_STEPS;
+	}
+
+	animating = 1;
+	anim_step = 0;
+
+	render_transition_frame();
+}
 
 static void
 output_handle_geometry(void *data, struct wl_output *wl_output,
@@ -476,15 +702,22 @@ main(int argc, char *argv[])
 	int random_flag = 0, opt;
 
 	static const struct option long_opts[] = {
-		{"random", no_argument, NULL, 'r'},
+		{"random",   no_argument,       NULL, 'r'},
+		{"interval", required_argument, NULL, 'i'},
 		{0, 0, 0, 0}
 	};
 
-	while ((opt = getopt_long(argc, argv, "r", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "ri:", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'r':
 			random_flag = 1;
 			break;
+		case 'i': {
+			long sec = strtol(optarg, NULL, 10);
+			if (sec <= 0) die("invalid interval: %s", optarg);
+			interval_ms = sec * 1000;
+			break;
+		}
 		default:
 			goto usage;
 		}
@@ -492,8 +725,8 @@ main(int argc, char *argv[])
 
 	if (random_flag) {
 		if (optind + 2 != argc)
-			die("usage: %s --random fill|fit|spread|stretch|tile <directory>",
-				argv[0]);
+			die("usage: %s [--interval N] --random fill|fit|spread|stretch|tile "
+			    "<directory>", argv[0]);
 
 		set_image_modify(argv[optind]);
 
@@ -505,9 +738,16 @@ main(int argc, char *argv[])
 		srand(time(NULL) ^ (getpid() << 16));
 		int idx = rand() % n;
 
-		if (asprintf(&image.path, "%s/%s",
-			argv[optind + 1], namelist[idx]->d_name) < 0)
+		const char *imgdir = argv[optind + 1];
+		size_t dirlen = strlen(imgdir);
+		while (dirlen > 1 && imgdir[dirlen - 1] == '/')
+			dirlen--;
+
+		if (asprintf(&image.path, "%.*s/%s",
+			(int)dirlen, imgdir, namelist[idx]->d_name) < 0)
 			die("asprintf:");
+
+		image.dir = argv[optind + 1];
 
 		for (int i = 0; i < n; i++)
 			free(namelist[i]);
@@ -538,13 +778,63 @@ main(int argc, char *argv[])
 	if (!compositor || !layer_shell || !shm)
 		die("bad compositor available");
 
-	while (wl_display_dispatch(display))
-		;
+	if (interval_ms > 0)
+		next_switch_ms = now_ms() + interval_ms;
+
+	/* poll-based event loop: dispatches wayland events, fires timers,
+	 * and drives cross-fade animation */
+	while (1) {
+		int timeout = -1;
+		uint64_t now = now_ms();
+
+		if (animating) {
+			/* during transition, check if all outputs are ready */
+			bool all_ready = true;
+			struct output *o;
+			wl_list_for_each(o, &outputs, link) {
+				if (o->frame_cb != NULL) {
+					all_ready = false;
+					break;
+				}
+			}
+			if (all_ready) {
+				if (anim_step >= FADE_STEPS) {
+					end_transition();
+					if (interval_ms > 0)
+						next_switch_ms = now_ms() + interval_ms;
+				} else {
+					render_transition_frame();
+				}
+				continue;
+			}
+			timeout = 16; /* ~60 fps poll while waiting for frame cb */
+		} else if (interval_ms > 0 && next_switch_ms <= now) {
+			start_transition();
+			continue;
+		} else if (interval_ms > 0) {
+			int remaining = (int)(next_switch_ms - now);
+			timeout = (remaining > 0) ? remaining : 0;
+		}
+
+		struct pollfd pfd = {
+			.fd = wl_display_get_fd(display),
+			.events = POLLIN
+		};
+		int ret = poll(&pfd, 1, timeout);
+
+		if (ret > 0 && (pfd.revents & POLLIN)) {
+			if (wl_display_dispatch(display) < 0)
+				break;
+		} else if (ret < 0) {
+			break;
+		}
+	}
 
 	return EXIT_SUCCESS;
 
 usage:
-	fprintf(stderr, "usage: %s [--random] fill|fit|spread|stretch|tile <file|directory>\n"
+	fprintf(stderr, "usage: %s [--interval <sec>] [--random] "
+	                "fill|fit|spread|stretch|tile <file|directory>\n"
 	                "       %s RRGGBBAA\n",
 	        argv[0], argv[0]);
 	return EXIT_FAILURE;

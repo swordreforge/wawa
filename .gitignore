@@ -3,3 +3,5 @@ wawa
 *-protocol.[ch]
 build/
 sail/build/
+.codegraph/
+.omo/

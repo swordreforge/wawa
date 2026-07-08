@@ -11,6 +11,7 @@ set(SAIL_BUILD_EXAMPLES   OFF CACHE BOOL "Disable SAIL examples")
 set(SAIL_COMBINE_CODECS   ON  CACHE BOOL "Combine codecs into a single library for simpler deployment")
 set(SAIL_THREAD_SAFE      OFF CACHE BOOL "Disable thread safety (wawa is single-threaded)")
 set(SAIL_MANIP_USE_SWSCALE OFF CACHE BOOL "Disable libswscale dependency for sail-manip")
+set(BUILD_TESTING            OFF CACHE BOOL "Disable SAIL tests")
 
 # ---- RPATH: keep build tree working, strip for install (AUR compliance) ----
 # Installed binary/libs must not embed any build directory paths.

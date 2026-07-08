@@ -443,6 +443,18 @@ layer_surface_handle_closed(void *data, struct zwlr_layer_surface_v1 *surface)
 {
 	struct output *output = data;
 
+	if (output->anim_shm) {
+		munmap(output->anim_shm, output->size);
+	}
+	if (output->anim_buf) {
+		wl_buffer_destroy(output->anim_buf);
+	}
+	free(output->anim_old);
+	free(output->anim_new);
+	if (output->frame_cb) {
+		wl_callback_destroy(output->frame_cb);
+	}
+
 	zwlr_layer_surface_v1_destroy(output->layer_surface);
 	wl_surface_destroy(output->surface);
 	wl_output_destroy(output->wl);

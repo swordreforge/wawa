@@ -222,21 +222,25 @@ image_fill(unsigned char *dst, struct output *output)
 static void
 image_tile(unsigned char *dst, struct output *o)
 {
-	unsigned char *to, *src;
-	uint16_t off_x, off_y, w, h;
+	uint32_t off_x, off_y;
+	size_t row_sz = o->width * 4;
 
-	/* implementation shamelessly stolen from xwallpaper, MIT:
-	 * 2025 Tobias Stoeckmann <tobias@stoeckmann.org> */
-	for (off_y = 0; off_y < o->height; off_y += image.height) {
-		h = (off_y + image.height > o->height) ? o->height - off_y : image.height;
+	/* Horizontally tile each source row, then memcpy the full row
+	 * to all vertical repetitions.  Avoids O(N×M) per-row memcpy
+	 * calls — critical for small repeating patterns. */
+	for (int ys = 0; ys < image.height && ys < o->height; ys++) {
+		const unsigned char *src = image.data + (ys * image.width * 4);
+		unsigned char *tpl = dst + (ys * o->stride);
+
 		for (off_x = 0; off_x < o->width; off_x += image.width) {
-			w = (off_x + image.width > o->width) ? o->width - off_x : image.width;
-			for (int y = 0; y < h; y++) {
-				to = dst + ((off_y + y) * o->stride);
-				src = image.data + (y * image.width * 4);
-				memcpy(to + (off_x * 4), src, w * 4);
-			}
+			uint32_t w = (off_x + image.width > o->width)
+			           ? o->width - off_x : image.width;
+			memcpy(tpl + off_x * 4, src, w * 4);
 		}
+
+		for (off_y = ys + image.height; off_y < o->height;
+		     off_y += image.height)
+			memcpy(dst + off_y * o->stride, tpl, row_sz);
 	}
 }
 
@@ -530,16 +534,29 @@ image_probe_suitable(const char *path, int screen_w, int screen_h)
 	return fabs(img_ratio - scr_ratio) / scr_ratio <= smart_tol;
 }
 
-/* Pick a random image file from directory (re-scans each call).
- * When smart_tol is set, probes candidates and skips mismatched
- * aspect ratios, trying each file once before falling back. */
+/* Pick a random image file from directory.  Caches the scandir result
+ * across interval ticks — prevents O(n) directory I/O on every switch.
+ * Re-scans when the cache is exhausted (all files picked once) or on
+ * first call.  When smart_tol is set, probes candidates and skips
+ * mismatched aspect ratios, trying each file once before falling back. */
 static char *
 pick_random_file(const char *dir, int screen_w, int screen_h)
 {
-	struct dirent **namelist;
-	int n = scandir(dir, &namelist, scan_filter, alphasort);
-	if (n < 0) die("scandir %s:", dir);
-	if (n == 0) die("no supported images in %s", dir);
+	static struct dirent **namelist;
+	static int n;
+	static int used;
+
+	if (n == 0 || used >= n) {
+		if (namelist) {
+			for (int i = 0; i < n; i++)
+				free(namelist[i]);
+			free(namelist);
+		}
+		n = scandir(dir, &namelist, scan_filter, NULL);
+		if (n < 0) die("scandir %s:", dir);
+		if (n == 0) die("no supported images in %s", dir);
+		used = 0;
+	}
 
 	size_t dirlen = strlen(dir);
 	while (dirlen > 1 && dir[dirlen - 1] == '/')
@@ -557,10 +574,7 @@ pick_random_file(const char *dir, int screen_w, int screen_h)
 		if (image_probe_suitable(path, screen_w, screen_h))
 			break;
 	}
-
-	for (int i = 0; i < n; i++)
-		free(namelist[i]);
-	free(namelist);
+	used++;
 	return path;
 }
 
@@ -733,16 +747,20 @@ start_transition(void)
 	wl_list_for_each(output, &outputs, link) {
 		if (!output->configured)
 			continue;
-		output->anim_old = calloc(1, output->size);
-		output->anim_new = calloc(1, output->size);
+		output->anim_old = malloc(output->size);
+		output->anim_new = malloc(output->size);
 		if (!output->anim_old || !output->anim_new)
-			die("calloc:");
-		/* Letterbox areas (fit mode) must be opaque black, not
-		 * transparent black.  calloc zeros everything (A=0), so
-		 * force alpha to 255 before resize_to fills the center. */
-		for (size_t i = 3; i < output->size; i += 4) {
-			output->anim_old[i] = 255;
-			output->anim_new[i] = 255;
+			die("malloc:");
+		/* Fill both buffers with opaque black (BGRA: 0,0,0,255) in
+		 * one pass. resize_to overwrites the image region; letterbox
+		 * areas (fit mode) remain opaque black for clean compositing. */
+		{	uint32_t *po = (uint32_t *)output->anim_old;
+			uint32_t *pn = (uint32_t *)output->anim_new;
+			size_t npix = output->size / 4;
+			for (size_t i = 0; i < npix; i++) {
+				po[i] = 0xFF000000;
+				pn[i] = 0xFF000000;
+			}
 		}
 		resize_to(output->anim_old, output,
 			image.data, image.width, image.height);

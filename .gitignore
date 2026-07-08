@@ -1,3 +1,5 @@
 wawa
 *.o
 *-protocol.[ch]
+build/
+sail/build/

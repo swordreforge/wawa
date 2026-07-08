@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "sail",
+  "homepage": "https://github.com/HappySeaFox/sail",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "features": [
+        "avcodec",
+        "avformat",
+        "swscale",
+        "swresample"
+      ]
+    },
+    "giflib",
+    "jbigkit",
+    {
+      "name": "libavif",
+      "features": [
+        "aom"
+      ]
+    },
+    "libheif",
+    "libjpeg-turbo",
+    "libjxl",
+    "libpng",
+    "libraw",
+    "libwebp",
+    "nanosvg",
+    "openexr",
+    "openjpeg",
+    "tiff",
+    "zlib"
+  ],
+  "builtin-baseline": "a0b1c8d3a477c1cb4813d8e127a56961707ca42b"
+}

@@ -1,0 +1,99 @@
+add_library(sail-manip
+            cmyk.c
+            cmyk.h
+            conversion_options.c
+            conversion_options.h
+            convert.c
+            convert.h
+            fast_conversions.c
+            fast_conversions.h
+            manip_common.h
+            manip_utils.c
+            manip_utils.h
+            quantize.c
+            quantize.h
+            rotate.c
+            rotate.h
+            sail-manip.h
+            swscale_conversions.c
+            swscale_conversions.h
+            scale.c
+            scale.h
+            scale_swscale.c
+            scale_swscale.h
+            ycbcr.c
+            ycbcr.h
+            ycck.c
+            ycck.h)
+
+# Build a list of public headers to install
+#
+set(PUBLIC_HEADERS conversion_options.h
+                   convert.h
+                   manip_common.h
+                   quantize.h
+                   rotate.h
+                   scale.h
+                   sail-manip.h)
+
+set(VERSION ${PROJECT_VERSION})
+set_target_properties(sail-manip PROPERTIES
+                                 VERSION ${VERSION}
+                                 SOVERSION ${PROJECT_VERSION_MAJOR}
+                                 PUBLIC_HEADER "${PUBLIC_HEADERS}")
+
+# Definitions, includes, link
+#
+target_link_libraries(sail-manip PRIVATE $<BUILD_INTERFACE:sail-common-flags>)
+
+sail_enable_pch(TARGET sail-manip HEADER sail-manip.h)
+
+if (SAIL_WINDOWS_INSTALL_PDB)
+    sail_windows_install_pdb(TARGET sail-manip)
+endif()
+
+target_include_directories(sail-manip PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>)
+
+if (SAIL_HAVE_OPENMP)
+    target_compile_options(sail-manip     PRIVATE ${SAIL_OPENMP_FLAGS})
+    target_include_directories(sail-manip PRIVATE ${SAIL_OPENMP_INCLUDE_DIRS})
+    target_link_libraries(sail-manip      PRIVATE ${SAIL_OPENMP_LIBS})
+endif()
+
+target_link_libraries(sail-manip PUBLIC sail-common)
+
+# sinf, fabsf, M_PI
+find_library(MATH_LIBRARY NAMES m)
+if (MATH_LIBRARY)
+    target_link_libraries(sail-manip PRIVATE ${MATH_LIBRARY})
+endif()
+
+if (SAIL_MANIP_SWSCALE_ENABLED)
+    target_include_directories(sail-manip PRIVATE ${SAIL_SWSCALE_INCLUDE_DIR} ${SAIL_AVUTIL_INCLUDE_DIR})
+    target_link_libraries(sail-manip PRIVATE ${SAIL_SWSCALE_LIBS} ${SAIL_AVUTIL_LIBS})
+
+    if (ANDROID AND NOT BUILD_SHARED_LIBS)
+        target_link_libraries(sail-manip INTERFACE mediandk android)
+    endif()
+endif()
+
+# pkg-config integration
+#
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/pkgconfig/sail-manip.pc.in"
+                "${CMAKE_CURRENT_BINARY_DIR}/sail-manip.pc" @ONLY)
+
+# Installation
+#
+install(TARGETS sail-manip
+        EXPORT SailManipTargets
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/sail/sail-manip")
+
+# Install development packages
+#
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sail-manip.pc"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+
+sail_install_cmake_config(TARGET "SailManip" FOLDER "sailmanip" VERSION "${VERSION}")

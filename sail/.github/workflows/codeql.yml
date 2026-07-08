@@ -1,0 +1,52 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  schedule:
+    - cron: "15 0 * * 2"
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ cpp ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Packages
+        run: |
+            sudo apt-get update
+            sudo apt-get install -y cmake libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+                                    libavif-dev libgif-dev libheif-dev libheif-plugin-x265            \
+                                    libjbig-dev libjpeg-dev libjxl-dev libnanosvg-dev libopenexr-dev  \
+                                    libopenjp2-7-dev libopenjpip-dec-server libopenjpip-server        \
+                                    libpng-dev libraw-dev libsdl2-dev libtiff-dev libwebp-dev zlib1g-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ matrix.language }}
+          queries: +security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v2
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+        with:
+          category: "/language:${{ matrix.language }}"

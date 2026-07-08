@@ -1,0 +1,239 @@
+name: Build Python Wheels
+
+on:
+  push:
+    branches: [ master, main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build_wheels:
+    name: Build wheels on ${{ matrix.os }} - Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_TARGET_TRIPLET: x64-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install build dependencies (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+                                libavif-dev libgif-dev libheif-dev libheif-plugin-x265            \
+                                libjbig-dev libjpeg-dev libjxl-dev libnanosvg-dev libopenexr-dev  \
+                                libopenjp2-7-dev libopenjpip-dec-server libopenjpip-server        \
+                                libpng-dev libraw-dev libsdl2-dev libtiff-dev libwebp-dev zlib1g-dev
+
+    - name: Install build dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install ffmpeg giflib jbigkit jpeg-turbo jpeg-xl libavif libheif libpng libraw libtiff openexr openjpeg resvg webp
+
+    - name: Restore vcpkg cache (Windows)
+      if: runner.os == 'Windows'
+      id: vcpkg-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: vcpkg
+        key: vcpkg-${{ env.VCPKG_TARGET_TRIPLET }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+        restore-keys: vcpkg-${{ env.VCPKG_TARGET_TRIPLET }}-${{ hashFiles('vcpkg.json') }}-
+
+    - name: Set up vcpkg (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        if [ ! -f "vcpkg/vcpkg.exe" ]; then
+          rm -rf vcpkg
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          ./bootstrap-vcpkg.bat
+        fi
+
+    - name: Install Python build tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine wheel setuptools pybind11 numpy
+
+    - name: Install auditwheel (Linux)
+      if: runner.os == 'Linux'
+      run: pip install auditwheel patchelf
+
+    - name: Install delocate (macOS)
+      if: runner.os == 'macOS'
+      run: pip install delocate
+
+    - name: Build wheel (Linux)
+      if: runner.os == 'Linux'
+      working-directory: src/bindings/sail-python
+      run: |
+        python -m build --wheel
+        mkdir -p wheelhouse
+        for wheel in dist/*.whl; do
+          auditwheel repair "$wheel" -w wheelhouse/
+        done
+
+    - name: Build wheel (macOS)
+      if: runner.os == 'macOS'
+      working-directory: src/bindings/sail-python
+      env:
+        CMAKE_OSX_ARCHITECTURES: arm64
+        _PYTHON_HOST_PLATFORM: macosx-15.0-arm64
+        MACOSX_DEPLOYMENT_TARGET: 15.0
+        CMAKE_OSX_DEPLOYMENT_TARGET: 15.0
+      run: |
+        python -m build --wheel
+        mkdir -p wheelhouse
+        for wheel in dist/*.whl; do
+          delocate-wheel -w wheelhouse/ "$wheel"
+        done
+
+    - name: Build wheel (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      working-directory: src/bindings/sail-python
+      env:
+        VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg/archives
+
+        # When we build Python wheels, CMAKE_SOURCE_DIR is src/bindings/sail-python.
+        # VCPKG will try to search for vcpkg.json there. Redirect vcpkg to the project root.
+        #
+        CMAKE_ARGS: -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
+                        -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_TARGET_TRIPLET }}
+                        -DVCPKG_MANIFEST_DIR=${{ github.workspace }}
+                        -DVCPKG_INSTALL_OPTIONS=--clean-buildtrees-after-build
+                        -DCMAKE_C_FLAGS=-MP
+                        -DCMAKE_CXX_FLAGS=-MP
+                        -DSAIL_WINDOWS_STATIC_CRT=OFF
+      run: |
+        mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+        python -m build --wheel
+        mkdir -p wheelhouse
+        mv dist/*.whl wheelhouse/
+
+    - name: Check wheels
+      shell: bash
+      working-directory: src/bindings/sail-python
+      run: |
+        twine check --strict wheelhouse/*.whl
+
+    - name: Test wheel installation
+      shell: bash
+      working-directory: src/bindings/sail-python
+      run: |
+        pip install wheelhouse/*.whl
+        mv sailpy sailpy.backup
+        python -c "import sailpy; print('sailpy version:', sailpy.__version__)"
+
+    - name: Install test dependencies
+      run: |
+        pip install pytest
+
+    - name: Run tests
+      working-directory: src/bindings/sail-python
+      run: |
+        pytest tests/
+
+        python -m sailpy.examples.01_quickstart
+        python -m sailpy.examples.02_memory_io
+        python -m sailpy.examples.03_features_and_options
+        python -m sailpy.examples.04_numpy_integration
+        python -m sailpy.examples.05_multiframe
+        python -m sailpy.examples.06_probe
+        python -m sailpy.examples.07_codec_info
+        python -m sailpy.examples.08_logging
+        python -m sailpy.examples.09_image_transformations
+        python -m sailpy.examples.10_enum_usage
+        python -m sailpy.examples.11_advanced_saving
+
+    - name: Save vcpkg cache (Windows)
+      if: success() && runner.os == 'Windows'
+      uses: actions/cache/save@v5
+      with:
+        path: vcpkg
+        key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+
+    - name: Upload wheels as artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+        path: src/bindings/sail-python/wheelhouse/*.whl
+        retention-days: 30
+
+  build_sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+
+    - name: Install Python build tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install build setuptools pybind11 numpy
+
+    - name: Build sdist
+      working-directory: src/bindings/sail-python
+      run: python -m build --sdist
+
+    - name: Upload sdist as artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: sdist
+        path: src/bindings/sail-python/dist/*.tar.gz
+        retention-days: 30
+
+  upload_pypi:
+    name: Upload wheels to PyPI
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/sailpy
+    permissions:
+      id-token: write
+
+    steps:
+    - name: Download all wheels
+      uses: actions/download-artifact@v7
+      with:
+        pattern: wheels-*
+        path: dist
+        merge-multiple: true
+
+    - name: Download sdist
+      uses: actions/download-artifact@v7
+      with:
+        name: sdist
+        path: dist
+
+    - name: List all distributions
+      run: ls -lh dist/
+
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        skip-existing: true

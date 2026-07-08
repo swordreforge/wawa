@@ -1,0 +1,27 @@
+# AVIF codec information
+#
+[codec]
+layout=8
+version=1.0.1
+priority=HIGH
+name=AVIF
+description=AV1 Still Image File Format
+# ????ftypavif;????ftypavis
+magic-numbers=?? ?? ?? ?? 66 74 79 70 61 76 69 66;?? ?? ?? ?? 66 74 79 70 61 76 69 73
+extensions=avif;avifs
+mime-types=image/avif;image/avif-sequence
+
+[load-features]
+features=STATIC;ANIMATED;META-DATA;ICCP;SOURCE-IMAGE
+tuning=avif-threads
+
+[save-features]
+features=STATIC;ANIMATED;META-DATA;ICCP
+pixel-formats=BPP24-RGB;BPP24-BGR;BPP32-RGBA;BPP32-BGRA;BPP32-ARGB;BPP32-ABGR
+compressions=AV1
+default-compression=AV1
+compression-level-min=0
+compression-level-max=100
+compression-level-default=25
+compression-level-step=1
+tuning=avif-speed;avif-threads;avif-auto-tiling

@@ -1,0 +1,26 @@
+# WAL codec information
+#
+[codec]
+layout=8
+version=0.4.0
+priority=LOWEST
+name=WAL
+description=Quake2 Texture
+magic-numbers=
+extensions=wal
+mime-types=
+
+[load-features]
+features=STATIC;MULTI-PAGED;SOURCE-IMAGE
+tuning=
+
+[save-features]
+features=STATIC;MULTI-PAGED
+pixel-formats=BPP8-INDEXED
+compressions=NONE
+default-compression=NONE
+compression-level-min=0
+compression-level-max=0
+compression-level-default=0
+compression-level-step=0
+tuning=

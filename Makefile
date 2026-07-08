@@ -1,46 +1,39 @@
 # See LICENSE file for copyright and license details.
-.POSIX:
+#
+# wawa now uses SAIL (Squirrel Abstract Imaging Library) via CMake.
+# This Makefile is a convenience wrapper around the CMake build.
+#
+# Dependencies: cmake, pkg-config, wayland-client, wayland-protocols,
+#               wayland-scanner, libwebp, libpng, libjpeg-turbo, etc.
+#
+# Install dependencies on Arch Linux:
+#   sudo pacman -S cmake wayland wayland-protocols libpng libjpeg-turbo libwebp
+#
 
-VERSION = 1.0
-
-PKG_CONFIG = pkg-config
+BUILD_DIR = build
+CONFIG  ?= Release
+JOBS    ?= $(shell nproc 2>/dev/null || echo 4)
 
 PREFIX = /usr/local
 
-PKGS = wayland-client
-INCS != $(PKG_CONFIG) --cflags $(PKGS)
-LIBS != $(PKG_CONFIG) --libs $(PKGS)
+all: $(BUILD_DIR)/build.stamp
 
-CPPFLAGS = -D_GNU_SOURCE -DVERSION=\"$(VERSION)\"
-CFLAGS   = -pedantic -Wall $(CPPFLAGS) $(INCS)
-LDLIBS   = $(LIBS)
+$(BUILD_DIR)/build.stamp: CMakeLists.txt sail/CMakeLists.txt wawa.c
+	mkdir -p $(BUILD_DIR)
+	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(CONFIG) -DCMAKE_INSTALL_PREFIX=$(PREFIX)
+	cmake --build $(BUILD_DIR) -j$(JOBS)
+	touch $@
 
-all: wawa
+wawa: $(BUILD_DIR)/build.stamp
+	cp $(BUILD_DIR)/wawa wawa
 
-PROTO = wlr-layer-shell-unstable-v1-protocol.h xdg-shell-protocol.h
-OBJ = wawa.o $(PROTO:.h=.o)
-
-wawa.c: $(PROTO)
-wawa: $(OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)  
-
-WAYLAND_PROTOCOLS != $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols
-WAYLAND_SCANNER   != $(PKG_CONFIG) --variable=wayland_scanner wayland-scanner
-
-# I absolutely despise this. Cannot avoid it without using BSD or GNU make.
-xdg-shell-protocol.h:
-	$(WAYLAND_SCANNER) client-header $(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
-xdg-shell-protocol.c:
-	$(WAYLAND_SCANNER) private-code $(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
-wlr-layer-shell-unstable-v1-protocol.h:
-	$(WAYLAND_SCANNER) client-header wlr-layer-shell-unstable-v1.xml $@
-wlr-layer-shell-unstable-v1-protocol.c:
-	$(WAYLAND_SCANNER) private-code wlr-layer-shell-unstable-v1.xml $@
-	
 clean:
-	rm -f wawa $(OBJ) $(PROTO) $(PROTO:.h=.c)
+	rm -rf $(BUILD_DIR) wawa
 
-install: all
+distclean: clean
+	rm -rf sail/build
+
+install: wawa
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
 	cp -f wawa $(DESTDIR)$(PREFIX)/bin
 	chmod 755 $(DESTDIR)$(PREFIX)/bin/wawa
@@ -48,4 +41,4 @@ install: all
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/wawa
 
-.PHONY: all clean install uninstall
+.PHONY: all clean distclean install uninstall wawa

@@ -1,0 +1,26 @@
+# XBM codec information
+#
+[codec]
+layout=8
+version=0.8.1
+priority=LOWEST
+name=XBM
+description=X BitMap
+magic-numbers=
+extensions=xbm
+mime-types=image/x-xbitmap;image/x-xbm
+
+[load-features]
+features=STATIC;SOURCE-IMAGE
+tuning=
+
+[save-features]
+features=STATIC
+pixel-formats=BPP1-INDEXED
+compressions=NONE
+default-compression=NONE
+compression-level-min=0
+compression-level-max=0
+compression-level-default=0
+compression-level-step=0
+tuning=xbm-version;xbm-name

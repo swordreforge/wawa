@@ -1,0 +1,26 @@
+# BMP codec information
+#
+[codec]
+layout=8
+version=1.2.1
+priority=LOW
+name=BMP
+description=Bitmap Picture
+magic-numbers=42 4d;02 00
+extensions=bmp;ddb;dib
+mime-types=image/bmp;image/x-bmp
+
+[load-features]
+features=STATIC;META-DATA;SOURCE-IMAGE
+tuning=
+
+[save-features]
+features=STATIC
+pixel-formats=BPP1-INDEXED;BPP4-INDEXED;BPP8-INDEXED;BPP8-GRAYSCALE;BPP16-BGR555;BPP24-BGR;BPP32-BGRA
+compressions=NONE;RLE
+default-compression=NONE
+compression-level-min=0
+compression-level-max=0
+compression-level-default=0
+compression-level-step=0
+tuning=

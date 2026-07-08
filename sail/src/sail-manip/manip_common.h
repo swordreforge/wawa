@@ -1,0 +1,99 @@
+/*  This file is part of SAIL (https://github.com/HappySeaFox/sail)
+
+    Copyright (c) 2021 Dmitry Baryshev
+
+    The MIT License
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+*/
+
+#pragma once
+
+/*
+ * Options to control color conversion behavior.
+ */
+enum SailConversionOption
+{
+    /*
+     * Drops the input alpha channel if the output alpha channel doesn't exist.
+     * For example, when we convert RGBA pixels to RGB.
+     *
+     * SAIL_CONVERSION_OPTION_DROP_ALPHA and SAIL_CONVERSION_OPTION_BLEND_ALPHA are mutually
+     * exclusive. If both are specified, SAIL_CONVERSION_OPTION_BLEND_ALPHA wins.
+     */
+    SAIL_CONVERSION_OPTION_DROP_ALPHA = 1 << 0,
+
+    /*
+     * Blend the input alpha channel into the other color components if the output alpha channel
+     * doesn't exist. For example, when we convert RGBA pixels to RGB.
+     *
+     * Formula:
+     *   opacity = alpha / max_alpha (to convert to [0, 1])
+     *   output_pixel = opacity * input_pixel + (1 - opacity) * background
+     */
+    SAIL_CONVERSION_OPTION_BLEND_ALPHA = 1 << 1,
+
+    /*
+     * Apply Floyd-Steinberg dithering when converting to indexed formats.
+     * Only applicable when the output format is indexed (with bpp 1/4/8).
+     * Currently only BPP8_INDEXED (256 colors) supports dithering.
+     *
+     * Dithering reduces color banding on smooth gradients by distributing
+     * quantization error to neighboring pixels.
+     */
+    SAIL_CONVERSION_OPTION_DITHERING = 1 << 2,
+
+    /*
+     * Preserve the ICC profile when converting between pixel formats.
+     * By default, ICC profiles are cleared when converting between different
+     * color spaces (e.g., RGB to Grayscale, CMYK to RGB). When this option is set,
+     * the ICC profile is preserved even during color space conversion.
+     *
+     * Note: The ICC profile may become not applicable after color space conversion,
+     * and applications should handle this appropriately.
+     */
+    SAIL_CONVERSION_OPTION_PRESERVE_ICCP = 1 << 3,
+};
+
+/* Convert 8-bit component to 16-bit: v * 257 = (v << 8) | v */
+#define SAIL_COMPONENT_8_TO_16(v) (((uint16_t)(v) << 8) | (uint16_t)(v))
+
+/* Convert 16-bit component to 8-bit: v / 257 ≈ (v * 255 + 32768) / 65536 */
+#define SAIL_COMPONENT_16_TO_8(v) ((uint8_t)((((uint32_t)(v) * 255 + 32768) >> 16)))
+
+/*
+ * RGB to Grayscale conversion using integer weights.
+ * Based on ITU-R BT.601: Y = 0.299*R + 0.587*G + 0.114*B
+ * Scaled by 256 for integer arithmetic.
+ */
+#define SAIL_RGB_TO_GRAY_R_WEIGHT 77  /* 0.299 * 256 ≈ 77  */
+#define SAIL_RGB_TO_GRAY_G_WEIGHT 150 /* 0.587 * 256 ≈ 150 */
+#define SAIL_RGB_TO_GRAY_B_WEIGHT 29  /* 0.114 * 256 ≈ 29  */
+
+/* Calculate 8-bit grayscale from 8-bit RGB */
+#define SAIL_RGB8_TO_GRAY8(r, g, b)                                                   \
+    ((uint8_t)(((SAIL_RGB_TO_GRAY_R_WEIGHT * (r)) + (SAIL_RGB_TO_GRAY_G_WEIGHT * (g)) \
+                + (SAIL_RGB_TO_GRAY_B_WEIGHT * (b)))                                  \
+               >> 8))
+
+/* Calculate 16-bit grayscale from 16-bit RGB */
+#define SAIL_RGB16_TO_GRAY16(r, g, b)                                                  \
+    ((uint16_t)(((SAIL_RGB_TO_GRAY_R_WEIGHT * (r)) + (SAIL_RGB_TO_GRAY_G_WEIGHT * (g)) \
+                 + (SAIL_RGB_TO_GRAY_B_WEIGHT * (b)))                                  \
+                >> 8))

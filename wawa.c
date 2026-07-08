@@ -1,7 +1,12 @@
 /* See LICENSE file for copyright and license details. */
 #include <byteswap.h>
 #include <fcntl.h>
+#include <math.h>
+#include <stdarg.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <wayland-client-protocol.h>
@@ -10,9 +15,8 @@
 #include <linux/memfd.h>
 #endif
 
-#include "stbi_alloc.h"
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#include <sail/sail.h>
+#include <sail-manip/sail-manip.h>
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb_image_resize2.h"
 
@@ -48,7 +52,8 @@ static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_list outputs;
 
 struct {
-	FILE *fp;
+	char *path;
+	struct sail_image *sail_img;
 	int width, height;
 	unsigned char *data;
 } image;
@@ -58,8 +63,15 @@ static uint32_t color;
 static void image_fill(unsigned char *dst, struct output *output);
 static void (*image_modify)(unsigned char *, struct output *) = image_fill;
 
-static void
-noop() {}
+static void noop_geometry(void *data, struct wl_output *wl_output,
+	int32_t x, int32_t y, int32_t physical_width, int32_t physical_height,
+	int32_t subpixel, const char *make, const char *model, int32_t transform) {}
+static void noop_mode(void *data, struct wl_output *wl_output,
+	uint32_t flags, int32_t width, int32_t height, int32_t refresh) {}
+static void noop_done(void *data, struct wl_output *wl_output) {}
+static void noop_scale(void *data, struct wl_output *wl_output, int32_t factor) {}
+static void noop_name(void *data, struct wl_output *wl_output, const char *name) {}
+static void noop_description(void *data, struct wl_output *wl_output, const char *description) {}
 
 static void
 die(const char *fmt, ...)
@@ -262,10 +274,29 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 	if (output->configured && width == output->width && height == output->height)
 		return;
 
-	if (!image.data && image.fp) {
-		if (fseek(image.fp, 0, SEEK_SET) < 0) die("fseek:");
-		image.data = stbi_load_from_file(image.fp, &image.width, &image.height, NULL, 4);
-		if (!image.data) die("failed to load image: %s", stbi_failure_reason());
+	if (!image.data && image.path) {
+		struct sail_image *sail_img = NULL;
+		sail_status_t status;
+
+		status = sail_load_from_file(image.path, &sail_img);
+		if (status != SAIL_OK) die("failed to load image");
+
+		/* Convert to RGBA if the native format isn't already */
+		if (sail_img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_RGBA) {
+			struct sail_image *converted = NULL;
+			status = sail_convert_image(sail_img, SAIL_PIXEL_FORMAT_BPP32_RGBA, &converted);
+			if (status != SAIL_OK) {
+				sail_destroy_image(sail_img);
+				die("failed to convert image to RGBA");
+			}
+			sail_destroy_image(sail_img);
+			sail_img = converted;
+		}
+
+		image.sail_img = sail_img;
+		image.data = sail_img->pixels;
+		image.width = sail_img->width;
+		image.height = sail_img->height;
 	}
 
 	output->width = width;
@@ -280,12 +311,13 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 
 	output->configured = true;
 
-	if (!image.fp) return;
+	if (!image.path) return;
 	wl_list_for_each(output, &outputs, link)
 		if (!output->configured) return;
 
-	stbi_image_free(image.data);
+	sail_destroy_image(image.sail_img);
 	image.data = NULL;
+	image.sail_img = NULL;
 }
 
 static void
@@ -321,11 +353,11 @@ output_handle_geometry(void *data, struct wl_output *wl_output,
 
 static const struct wl_output_listener output_listener = {
 	.geometry = output_handle_geometry,
-	.mode = noop,
-	.done = noop,
-	.scale = noop,
-	.name = noop,
-	.description = noop,
+	.mode = noop_mode,
+	.done = noop_done,
+	.scale = noop_scale,
+	.name = noop_name,
+	.description = noop_description,
 };
 
 static void
@@ -409,11 +441,14 @@ main(int argc, char *argv[])
 		else if (!strcmp(argv[1], "spread")) image_modify = image_spread;
 		else goto usage;
 
-		if (!(image.fp = fopen(argv[2], "rb"))) die("fopen %s:", argv[2]);
+		image.path = argv[2];
 		break;
 	default:
 		goto usage;
 	}
+
+	/* Initialize SAIL image library */
+	sail_init();
 
 	if (!(display = wl_display_connect(NULL)))
 		die("failed to connect to wayland");

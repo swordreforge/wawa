@@ -1,0 +1,26 @@
+# JPEGXL codec information
+#
+[codec]
+layout=8
+version=0.4.0
+priority=LOW
+name=JPEGXL
+description=JPEG XL
+magic-numbers=FF 0A;00 00 00 0C 4A 58 4C 20 0D 0A 87 0A
+extensions=jxl
+mime-types=image/jxl
+
+[load-features]
+features=STATIC;ANIMATED;META-DATA;ICCP;SOURCE-IMAGE
+tuning=jpegxl-desired-intensity-target;jpegxl-render-spotcolors
+
+[save-features]
+features=STATIC;ANIMATED;ICCP
+pixel-formats=BPP8-GRAYSCALE;BPP16-GRAYSCALE;BPP16-GRAYSCALE-ALPHA;BPP32-GRAYSCALE-ALPHA;BPP24-RGB;BPP48-RGB;BPP32-RGBA;BPP64-RGBA
+compressions=JPEG-XL
+default-compression=JPEG-XL
+compression-level-min=0
+compression-level-max=100
+compression-level-default=75
+compression-level-step=1
+tuning=jpegxl-effort;jpegxl-decoding-speed;jpegxl-modular;jpegxl-progressive-ac;jpegxl-progressive-dc;jpegxl-responsive;jpegxl-epf;jpegxl-gaborish;jpegxl-photon-noise;jpegxl-modular-predictor;jpegxl-palette-colors;jpegxl-resampling

@@ -12,6 +12,11 @@ set(SAIL_COMBINE_CODECS   ON  CACHE BOOL "Combine codecs into a single library f
 set(SAIL_THREAD_SAFE      OFF CACHE BOOL "Disable thread safety (wawa is single-threaded)")
 set(SAIL_MANIP_USE_SWSCALE OFF CACHE BOOL "Disable libswscale dependency for sail-manip")
 
+# ---- RPATH: keep build tree working, strip for install (AUR compliance) ----
+# Installed binary/libs must not embed any build directory paths.
+# ldconfig resolves the standard /usr/lib/ paths at runtime.
+set(CMAKE_SKIP_INSTALL_RPATH ON)
+
 # ---- Machine-specific optimization for ALL targets including SAIL ----
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
 

@@ -6,6 +6,7 @@
 #include <getopt.h>
 #include <math.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -88,6 +89,22 @@ static int interval_ms;   /* 0 = no interval switching */
 static int animating;     /* non-zero = transition in progress */
 static int anim_step;     /* current frame (0..FADE_STEPS-1) */
 static uint64_t next_switch_ms; /* monotonic ms for next switch */
+static int paused;        /* non-zero = interval switching paused */
+
+/* Signal-driven IPC: flags set by signal handler, checked in event loop */
+static volatile sig_atomic_t sig_skip_next;
+static volatile sig_atomic_t sig_toggle_pause;
+static volatile sig_atomic_t sig_rescan;
+
+static void
+sig_handler(int sig)
+{
+	switch (sig) {
+	case SIGUSR1: sig_skip_next   = 1; break;
+	case SIGUSR2: sig_toggle_pause = 1; break;
+	case SIGHUP:  sig_rescan       = 1; break;
+	}
+}
 
 static void image_fill(unsigned char *dst, struct output *output);
 static void (*image_modify)(unsigned char *, struct output *) = image_fill;
@@ -548,7 +565,8 @@ pick_random_file(const char *dir, int screen_w, int screen_h)
 	static int n;
 	static int used;
 
-	if (n == 0 || used >= n) {
+	if (sig_rescan || n == 0 || used >= n) {
+		sig_rescan = 0;
 		if (namelist) {
 			for (int i = 0; i < n; i++)
 				free(namelist[i]);
@@ -982,11 +1000,34 @@ main(int argc, char *argv[])
 	if (interval_ms > 0)
 		next_switch_ms = now_ms() + interval_ms;
 
+	/* Signal-driven IPC: SIGUSR1 skip, SIGUSR2 pause, SIGHUP rescan */
+	{	struct sigaction sa = { .sa_handler = sig_handler, .sa_flags = SA_RESTART };
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGUSR1, &sa, NULL);
+		sigaction(SIGUSR2, &sa, NULL);
+		sigaction(SIGHUP,  &sa, NULL);
+	}
+
 	/* poll-based event loop: dispatches wayland events, fires timers,
 	 * and drives cross-fade animation */
 	while (1) {
 		int timeout = -1;
 		uint64_t now;
+
+		/* Process signal-driven IPC flags */
+		if (sig_skip_next) {
+			sig_skip_next = 0;
+			if (!animating && interval_ms > 0 && !paused) {
+				start_transition();
+				continue;
+			}
+		}
+		if (sig_toggle_pause) {
+			sig_toggle_pause = 0;
+			paused = !paused;
+			if (!paused && interval_ms > 0)
+				next_switch_ms = now_ms() + interval_ms;
+		}
 
 		if (animating || interval_ms > 0) {
 			now = now_ms();
@@ -1011,7 +1052,8 @@ main(int argc, char *argv[])
 					continue;
 				}
 			} else if (interval_ms > 0 && next_switch_ms <= now) {
-				start_transition();
+				if (!paused) start_transition();
+				next_switch_ms = now_ms() + interval_ms;
 				continue;
 			} else if (interval_ms > 0) {
 				int remaining = (int)(next_switch_ms - now);
@@ -1049,7 +1091,11 @@ usage:
 	fprintf(stderr, "usage: %s [--interval <sec>] [--random] "
 	                "[--smart[=<tol>]] "
 	                "fill|fit|spread|stretch|tile <file|directory>\n"
-	                "       %s RRGGBBAA\n",
+	                "       %s RRGGBBAA\n"
+	                "\n"
+	                "signals: SIGUSR1  skip to next wallpaper\n"
+	                "         SIGUSR2  toggle pause/ resume\n"
+	                "         SIGHUP   rescan image directory\n",
 	        argv[0], argv[0]);
 	return EXIT_FAILURE;
 }

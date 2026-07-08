@@ -368,8 +368,9 @@ output_load_image(struct output *output)
 
 	struct zwp_linux_buffer_params_v1 *params =
 		zwp_linux_dmabuf_v1_create_params(linux_dmabuf);
-	zwp_linux_buffer_params_v1_add(params, fd, 0 /* plane */,
-		0 /* offset */, 0 /* stride_hi */, bo_stride, 0 /* modifier_hi */);
+	zwp_linux_buffer_params_v1_add(params, fd,
+		0 /* plane_idx */, 0 /* offset */, bo_stride,
+		0 /* modifier_hi */, 0 /* modifier_lo */);
 	struct wl_buffer *buffer = zwp_linux_buffer_params_v1_create_immed(
 		params, output->width, output->height,
 		GBM_FORMAT_ARGB8888, 0 /* flags */);
@@ -712,8 +713,8 @@ start_transition(void)
 
 		struct zwp_linux_buffer_params_v1 *params =
 			zwp_linux_dmabuf_v1_create_params(linux_dmabuf);
-		zwp_linux_buffer_params_v1_add(params, fd, 0,
-			0, 0, bo_stride, 0);
+		zwp_linux_buffer_params_v1_add(params, fd,
+			0, 0, bo_stride, 0, 0);
 		output->anim_buf = zwp_linux_buffer_params_v1_create_immed(
 			params, output->width, output->height,
 			GBM_FORMAT_ARGB8888, 0);

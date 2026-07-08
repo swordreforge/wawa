@@ -12,6 +12,17 @@ set(SAIL_COMBINE_CODECS   ON  CACHE BOOL "Combine codecs into a single library f
 set(SAIL_THREAD_SAFE      OFF CACHE BOOL "Disable thread safety (wawa is single-threaded)")
 set(SAIL_MANIP_USE_SWSCALE OFF CACHE BOOL "Disable libswscale dependency for sail-manip")
 
+# ---- Machine-specific optimization for ALL targets including SAIL ----
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+
+# ---- LTO for ALL targets (SAIL codecs benefit too) ----
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported LANGUAGES C)
+if(ipo_supported)
+    cmake_policy(SET CMP0069 NEW)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+
 # ---- Add SAIL as a subproject ----
 add_subdirectory(sail EXCLUDE_FROM_ALL)
 
@@ -76,16 +87,6 @@ add_executable(wawa
     wawa.c
     ${PROTOCOL_SRCS}
 )
-
-# LTO (link-time optimization) — only for wawa, not SAIL
-include(CheckIPOSupported)
-check_ipo_supported(RESULT ipo_supported LANGUAGES C)
-if(ipo_supported)
-    set_target_properties(wawa PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
-endif()
-
-# Architecture-specific optimizations for wawa
-target_compile_options(wawa PRIVATE -march=native)
 
 target_include_directories(wawa PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"

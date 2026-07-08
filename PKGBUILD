@@ -3,7 +3,7 @@
 
 pkgname=wawa-git
 _pkgname=wawa
-pkgver=r37.3c30a5f
+pkgver=r46.3f85c0e
 pkgrel=1
 pkgdesc="A simple, hackable, and distinctive Wayland wallpaper setter — wlr-layer-shell based, SAIL-powered"
 arch=('x86_64')
@@ -11,7 +11,8 @@ url="https://github.com/swordreforge/wawa"
 license=('MIT')
 depends=(
     'wayland'
-    # Common image format backends (SAIL auto-detects)
+    # Common image format backends — each is loaded on demand by SAIL's
+    # dynamic codec plugin (dlopen), not linked into wawa itself.
     'libpng'
     'libjpeg-turbo'
     'libwebp'
@@ -41,10 +42,9 @@ pkgver() {
 build() {
     cd "$srcdir/${_pkgname}"
 
-    # SAIL is bundled as a subproject in the source tree.
-    # Codec dependencies are auto-detected at CMake time —
-    # whatever system libraries are present get compiled into
-    # the combined libsail-codecs.so.
+    # SAIL is bundled as a subproject. Codecs are built as standalone
+    # MODULE .so plugins loaded via dlopen at runtime (SAIL_COMBINE_CODECS=OFF).
+    # SAIL's cmake installs them to /usr/lib/sail/codecs/ automatically.
     local cmake_options=(
         -B build
         -Wno-dev
@@ -54,6 +54,12 @@ build() {
     )
     cmake "${cmake_options[@]}"
     cmake --build build
+}
+
+check() {
+    cd "$srcdir/${_pkgname}"
+    # Verify the binary links cleanly (no build-tree references)
+    ldd build/wawa | grep -q "build/" && return 1 || return 0
 }
 
 package() {

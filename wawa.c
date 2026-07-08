@@ -73,6 +73,10 @@ struct {
 
 static uint32_t color;
 
+/* Smart resolution check: if non-zero, skip images whose aspect ratio
+ * deviates from the screen's by more than this fraction. */
+static double smart_tol;
+
 static struct {
 	struct sail_image *sail_img;
 	int width, height;
@@ -498,23 +502,57 @@ static const struct wl_callback_listener frame_listener = {
 	.done = frame_handle_done,
 };
 
-/* Pick a random image file from directory (re-scans each call) */
+/* Probe image metadata and reject images whose aspect ratio deviates too
+ * far from the screen's.  Uses sail_probe_file() which is lightweight
+ * (no pixel decoding).  When screen dimensions aren't known yet (0),
+ * passes everything — the first pick happens before outputs are
+ * configured; subsequent interval picks do full validation. */
+static int
+image_probe_suitable(const char *path, int screen_w, int screen_h)
+{
+	if (smart_tol == 0.0 || screen_w == 0 || screen_h == 0)
+		return 1;
+
+	struct sail_image *info = NULL;
+	sail_status_t st = sail_probe_file(path, &info, NULL);
+	if (st != SAIL_OK)
+		return 0;
+
+	double img_ratio = (double)info->width / info->height;
+	double scr_ratio = (double)screen_w / screen_h;
+
+	sail_destroy_image(info);
+
+	return fabs(img_ratio - scr_ratio) / scr_ratio <= smart_tol;
+}
+
+/* Pick a random image file from directory (re-scans each call).
+ * When smart_tol is set, probes candidates and skips mismatched
+ * aspect ratios, trying each file once before falling back. */
 static char *
-pick_random_file(const char *dir)
+pick_random_file(const char *dir, int screen_w, int screen_h)
 {
 	struct dirent **namelist;
 	int n = scandir(dir, &namelist, scan_filter, alphasort);
 	if (n < 0) die("scandir %s:", dir);
 	if (n == 0) die("no supported images in %s", dir);
 
-	int idx = rand() % n;
 	size_t dirlen = strlen(dir);
 	while (dirlen > 1 && dir[dirlen - 1] == '/')
 		dirlen--;
 
-	char *path;
-	if (asprintf(&path, "%.*s/%s", (int)dirlen, dir, namelist[idx]->d_name) < 0)
-		die("asprintf:");
+	int start = rand() % n;
+	char *path = NULL;
+	for (int i = 0; i < n; i++) {
+		int idx = (start + i) % n;
+
+		free(path);
+		if (asprintf(&path, "%.*s/%s", (int)dirlen, dir, namelist[idx]->d_name) < 0)
+			die("asprintf:");
+
+		if (image_probe_suitable(path, screen_w, screen_h))
+			break;
+	}
 
 	for (int i = 0; i < n; i++)
 		free(namelist[i]);
@@ -685,7 +723,12 @@ start_transition(void)
 		 * after the previous transition (steady-state memory saving). */
 		char *old_path = image.path;
 
-		image.path = pick_random_file(image.dir);
+		/* Use the first output's dimensions for smart probing. */
+		{	struct output *o = wl_container_of(outputs.next, o, link);
+			image.path = pick_random_file(image.dir,
+				o->configured ? (int)o->width : 0,
+				o->configured ? (int)o->height : 0);
+		}
 		load_next_image(image.path);
 
 		/* If image.data was freed (end_transition freed it), reload the
@@ -866,6 +909,7 @@ main(int argc, char *argv[])
 	static const struct option long_opts[] = {
 		{"random",   no_argument,       NULL, 'r'},
 		{"interval", required_argument, NULL, 'i'},
+		{"smart",    optional_argument, NULL, 's'},
 		{0, 0, 0, 0}
 	};
 
@@ -880,6 +924,11 @@ main(int argc, char *argv[])
 			interval_ms = sec * 1000;
 			break;
 		}
+		case 's':
+			smart_tol = optarg ? strtod(optarg, NULL) : 0.1;
+			if (smart_tol <= 0 || smart_tol > 1)
+				die("invalid tolerance: %s", optarg ? optarg : "0.1");
+			break;
 		default:
 			goto usage;
 		}
@@ -887,33 +936,14 @@ main(int argc, char *argv[])
 
 	if (random_flag) {
 		if (optind + 2 != argc)
-			die("usage: %s [--interval N] --random fill|fit|spread|stretch|tile "
-			    "<directory>", argv[0]);
+			die("usage: %s [--interval N] [--smart[=tol]] --random "
+			    "fill|fit|spread|stretch|tile <directory>", argv[0]);
 
 		set_image_modify(argv[optind]);
 
-		struct dirent **namelist;
-		int n = scandir(argv[optind + 1], &namelist, scan_filter, alphasort);
-		if (n < 0) die("scandir %s:", argv[optind + 1]);
-		if (n == 0) die("no supported images in %s", argv[optind + 1]);
-
 		srand(time(NULL) ^ (getpid() << 16));
-		int idx = rand() % n;
-
-		const char *imgdir = argv[optind + 1];
-		size_t dirlen = strlen(imgdir);
-		while (dirlen > 1 && imgdir[dirlen - 1] == '/')
-			dirlen--;
-
-		if (asprintf(&image.path, "%.*s/%s",
-			(int)dirlen, imgdir, namelist[idx]->d_name) < 0)
-			die("asprintf:");
-
+		image.path = pick_random_file(argv[optind + 1], 0, 0);
 		image.dir = argv[optind + 1];
-
-		for (int i = 0; i < n; i++)
-			free(namelist[i]);
-		free(namelist);
 	} else if (optind + 1 == argc) {
 		if (!parse_color(argv[optind])) goto usage;
 		image_modify = image_color;
@@ -1008,6 +1038,7 @@ main(int argc, char *argv[])
 
 usage:
 	fprintf(stderr, "usage: %s [--interval <sec>] [--random] "
+	                "[--smart[=<tol>]] "
 	                "fill|fit|spread|stretch|tile <file|directory>\n"
 	                "       %s RRGGBBAA\n",
 	        argv[0], argv[0]);

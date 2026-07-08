@@ -506,7 +506,25 @@ load_next_image(const char *path)
 	next_image.height = img->height;
 }
 
-/* End transition: swap next_image → image, free old resources */
+/* Render the current image (image.data) onto all outputs */
+static void
+render_static_frame(void)
+{
+	struct output *output;
+	wl_list_for_each(output, &outputs, link) {
+		if (!output->configured)
+			continue;
+		struct wl_buffer *buf = output_load_image(output);
+		wl_surface_attach(output->surface, buf, 0, 0);
+		wl_surface_commit(output->surface);
+		wl_buffer_destroy(buf);
+	}
+	wl_display_flush(display);
+}
+
+/* End transition: swap next_image → image, free old resources,
+ * then commit a clean 100% new frame (the last animation frame
+ * still has ~6% old blended in). */
 static void
 end_transition(void)
 {
@@ -537,6 +555,9 @@ end_transition(void)
 
 	animating = 0;
 	anim_step = 0;
+
+	/* flush final 100% new frame to erase any blend residue */
+	render_static_frame();
 }
 
 /* Render one frame of the cross-fade transition for all outputs */

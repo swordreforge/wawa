@@ -8,7 +8,7 @@ set(WAWA_VERSION "${PROJECT_VERSION}")
 set(SAIL_BUILD_APPS       OFF CACHE BOOL "Disable SAIL apps")
 set(SAIL_BUILD_BINDINGS   OFF CACHE BOOL "Disable SAIL bindings")
 set(SAIL_BUILD_EXAMPLES   OFF CACHE BOOL "Disable SAIL examples")
-set(SAIL_COMBINE_CODECS   ON  CACHE BOOL "Combine codecs into a single library for simpler deployment")
+set(SAIL_COMBINE_CODECS   OFF CACHE BOOL "Build codecs as standalone plugins loaded via dlopen at runtime")
 set(SAIL_THREAD_SAFE      OFF CACHE BOOL "Disable thread safety (wawa is single-threaded)")
 set(SAIL_MANIP_USE_SWSCALE OFF CACHE BOOL "Disable libswscale dependency for sail-manip")
 set(BUILD_TESTING            OFF CACHE BOOL "Disable SAIL tests")
@@ -115,6 +115,23 @@ target_compile_definitions(wawa PRIVATE
     _GNU_SOURCE
     VERSION="${WAWA_VERSION}"
 )
+
+# ---- Build codec plugins alongside wawa (only when they're MODULE libraries) ----
+# When SAIL_COMBINE_CODECS=OFF, each codec is a standalone MODULE .so loaded via dlopen.
+# They aren't linked to wawa, but must be built so they're available at runtime.
+file(GLOB SAIL_CODEC_SUBDIRS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/sail/src/sail-codecs"
+     "${CMAKE_CURRENT_SOURCE_DIR}/sail/src/sail-codecs/*")
+string(TOUPPER "${SAIL_DISABLE_CODECS}" SAIL_DISABLE_CODECS_UPPER)
+foreach(CODEC_DIR ${SAIL_CODEC_SUBDIRS})
+    if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/sail/src/sail-codecs/${CODEC_DIR}")
+        string(TOUPPER "${CODEC_DIR}" CODEC_UPPER)
+        if(NOT CODEC_UPPER IN_LIST SAIL_DISABLE_CODECS_UPPER)
+            if(TARGET sail-codec-${CODEC_DIR})
+                add_dependencies(wawa sail-codec-${CODEC_DIR})
+            endif()
+        endif()
+    endif()
+endforeach()
 
 # ---- Respect BUILD_SHARED_LIBS default ----
 if(NOT DEFINED BUILD_SHARED_LIBS)

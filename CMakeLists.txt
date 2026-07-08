@@ -100,6 +100,16 @@ add_executable(wawa
     ${PROTOCOL_SRCS}
 )
 
+# LTO (link-time optimization) — only for wawa, not SAIL
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported LANGUAGES C)
+if(ipo_supported)
+    set_target_properties(wawa PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+
+# Architecture-specific optimizations for wawa
+target_compile_options(wawa PRIVATE -march=native)
+
 target_include_directories(wawa PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
 )

@@ -51,6 +51,7 @@ build() {
         -D CMAKE_BUILD_TYPE=None
         -D CMAKE_INSTALL_PREFIX=/usr
         -D CMAKE_INSTALL_LIBDIR=lib
+        -D WAWA_MARCH=x86-64
     )
     cmake "${cmake_options[@]}"
     cmake --build build

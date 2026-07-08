@@ -24,8 +24,11 @@ set(CMAKE_SKIP_INSTALL_RPATH ON)
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE   "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -s")
 set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -s")
 
-# ---- Machine-specific optimization for ALL targets including SAIL ----
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+# ---- Microarchitecture target (ALL targets including SAIL) ----
+# Defaults to "native" for local builds. PKGBUILD overrides to "x86-64"
+# for binary portability (AUR compliance).
+set(WAWA_MARCH "native" CACHE STRING "Target microarchitecture (-march flag)")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=${WAWA_MARCH}")
 
 # ---- LTO for ALL targets (SAIL codecs benefit too) ----
 include(CheckIPOSupported)

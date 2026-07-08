@@ -286,6 +286,19 @@ set_image_modify(const char *mode)
 	else die("unknown mode: %s (use fill|fit|spread|stretch|tile)", mode);
 }
 
+/* Force every pixel in a BGRA 32bpp image to fully opaque.
+ * Wallpaper must never carry alpha — any pixel with A < 255 causes
+ * the compositor (which uses premultiplied alpha internally) to
+ * semi-transparently blend with stale BACKGROUND-layer content. */
+static void
+sail_force_opaque(struct sail_image *img)
+{
+	unsigned char *pixels = img->pixels;
+	size_t n = (size_t)img->width * img->height * 4;
+	for (size_t i = 3; i < n; i += 4)
+		pixels[i] = 255;
+}
+
 /* Apply current image_modify mode using a source other than the global image */
 static void
 resize_to(unsigned char *dst, struct output *output,
@@ -322,8 +335,7 @@ output_load_image(struct output *output)
 			            output->anim_new[i+1] * a;
 			data[i+2] = output->anim_old[i+2] * (1.0f - a) +
 			            output->anim_new[i+2] * a;
-			data[i+3] = output->anim_old[i+3] * (1.0f - a) +
-			            output->anim_new[i+3] * a;
+			data[i+3] = 255;
 		}
 		return output->anim_buf;
 	}
@@ -363,8 +375,7 @@ output_load_image(struct output *output)
 			            output->anim_new[i+1] * a;
 			data[i+2] = output->anim_old[i+2] * (1.0f - a) +
 			            output->anim_new[i+2] * a;
-			data[i+3] = output->anim_old[i+3] * (1.0f - a) +
-			            output->anim_new[i+3] * a;
+			data[i+3] = 255;
 		}
 	} else {
 		image_modify(data, output);
@@ -410,6 +421,8 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 				sail_destroy_image(sail_img);
 				sail_img = converted;
 			}
+
+			sail_force_opaque(sail_img);
 
 			image.sail_img = sail_img;
 			image.data = sail_img->pixels;
@@ -531,6 +544,8 @@ load_next_image(const char *path)
 		img = conv;
 	}
 
+	sail_force_opaque(img);
+
 	next_image.sail_img = img;
 	next_image.data = img->pixels;
 	next_image.width = img->width;
@@ -547,6 +562,8 @@ render_static_frame(void)
 			continue;
 		struct wl_buffer *buf = output_load_image(output);
 		wl_surface_attach(output->surface, buf, 0, 0);
+		wl_surface_damage(output->surface,
+			0, 0, output->width, output->height);
 		wl_surface_commit(output->surface);
 		wl_buffer_destroy(buf);
 	}
@@ -683,6 +700,7 @@ start_transition(void)
 					st = sail_convert_image(img, SAIL_PIXEL_FORMAT_BPP32_BGRA, &conv);
 					if (st == SAIL_OK) { sail_destroy_image(img); img = conv; }
 				}
+				sail_force_opaque(img);
 				image.sail_img = img;
 				image.data = img->pixels;
 				image.width = img->width;
@@ -696,10 +714,10 @@ start_transition(void)
 	wl_list_for_each(output, &outputs, link) {
 		if (!output->configured)
 			continue;
-		output->anim_old = malloc(output->size);
-		output->anim_new = malloc(output->size);
+		output->anim_old = calloc(1, output->size);
+		output->anim_new = calloc(1, output->size);
 		if (!output->anim_old || !output->anim_new)
-			die("malloc:");
+			die("calloc:");
 		resize_to(output->anim_old, output,
 			image.data, image.width, image.height);
 		resize_to(output->anim_new, output,

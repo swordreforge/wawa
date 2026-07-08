@@ -199,7 +199,7 @@ image_color(unsigned char *dst, struct output *output)
 static void
 image_stretch(unsigned char *dst, struct output *output)
 {
-	stbir_resize_uint8_linear(
+	stbir_resize_uint8_srgb(
 	  image.data, image.width, image.height, image.width * 4,
 		dst, output->width, output->height, output->stride, 4);
 }
@@ -215,7 +215,7 @@ image_fit(unsigned char *dst, struct output *output)
 	crop.height = image.height * factor;
 	crop.x = (output->width - crop.width) / 2;
 	crop.y = (output->height - crop.height) / 2;
-	stbir_resize_uint8_linear(
+	stbir_resize_uint8_srgb(
 	  image.data, image.width, image.height, image.width * 4,
 		dst + crop.y * output->stride + crop.x * 4,
 		crop.width, crop.height, output->stride, 4);
@@ -232,7 +232,7 @@ image_fill(unsigned char *dst, struct output *output)
 	crop.height = output->height * factor;
 	crop.x = (image.width - crop.width) / 2;
 	crop.y = (image.height - crop.height) / 2;
-	stbir_resize_uint8_linear(
+	stbir_resize_uint8_srgb(
 	  image.data + crop.y * image.width * 4 + crop.x * 4,
 	  crop.width, crop.height, image.width * 4,
 		dst, output->width, output->height, output->stride, 4);
@@ -296,7 +296,7 @@ image_spread(unsigned char *dst, struct output *output)
 	crop.width = MIN(ceil(output->width * scale), image.width - crop.x);
 	crop.height = MIN(ceil(output->height * scale), image.height - crop.y);
 
-	stbir_resize_uint8_linear(
+	stbir_resize_uint8_srgb(
 		image.data + (crop.y * image.width + crop.x) * 4,
 		crop.width, crop.height, image.width * 4,
 		dst, output->width, output->height, output->stride, 4);

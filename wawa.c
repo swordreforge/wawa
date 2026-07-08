@@ -775,6 +775,13 @@ main(int argc, char *argv[])
 	wl_display_roundtrip(display);
 	wl_display_roundtrip(display); /* output handlers */
 
+
+	/* Flush the initial surface commits queued in output_setup_callback.
+	 * Without this, the compositor never receives the layer surface
+	 * creation and never sends a configure event, leaving the first
+	 * image stuck in the queue indefinitely. */
+	wl_display_flush(display);
+
 	if (!compositor || !layer_shell || !shm)
 		die("bad compositor available");
 
@@ -825,6 +832,11 @@ main(int argc, char *argv[])
 		if (ret > 0 && (pfd.revents & POLLIN)) {
 			if (wl_display_dispatch(display) < 0)
 				break;
+			/* Flush outgoing requests queued by event handlers
+			 * (e.g. wl_surface_commit in configure handler).
+			 * Without this, commits pile up until the next
+			 * dispatch call, which may be seconds away. */
+			wl_display_flush(display);
 		} else if (ret < 0) {
 			break;
 		}

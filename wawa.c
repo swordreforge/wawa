@@ -718,6 +718,13 @@ start_transition(void)
 		output->anim_new = calloc(1, output->size);
 		if (!output->anim_old || !output->anim_new)
 			die("calloc:");
+		/* Letterbox areas (fit mode) must be opaque black, not
+		 * transparent black.  calloc zeros everything (A=0), so
+		 * force alpha to 255 before resize_to fills the center. */
+		for (size_t i = 3; i < output->size; i += 4) {
+			output->anim_old[i] = 255;
+			output->anim_new[i] = 255;
+		}
 		resize_to(output->anim_old, output,
 			image.data, image.width, image.height);
 		resize_to(output->anim_new, output,

@@ -368,6 +368,12 @@ output_load_image(struct output *output)
 		}
 	} else {
 		image_modify(data, output);
+		/* Force full opacity — many image formats carry RGBA
+		 * data with A < 255 which would composite semi‑transparent
+		 * over whatever the compositor keeps behind the BACKGROUND
+		 * layer (e.g. a stale framebuffer or scenefx cache). */
+		for (int i = 3; i < output->size; i += 4)
+			data[i] = 255;
 	}
 
 	munmap(data, output->size);
@@ -613,6 +619,17 @@ render_transition_frame(void)
 
 		struct wl_buffer *buf = output_load_image(output);
 		wl_surface_attach(output->surface, buf, 0, 0);
+
+		/* When reusing the pre‑allocated SHM buffer we must tell the
+		 * compositor the pixel contents changed; otherwise scenefx
+		 * (and potentially other rendering pipelines) may cache the
+		 * old content and the cross‑fade appears frozen.
+		 *
+		 * Use wl_surface_damage (v1, surface-local coords) rather
+		 * than damage_buffer (v4+) for maximum compositor compat;
+		 * wawa renders 1:1 so the coordinates are identical. */
+		wl_surface_damage(output->surface,
+			0, 0, output->width, output->height);
 
 		if (output->frame_cb)
 			wl_callback_destroy(output->frame_cb);

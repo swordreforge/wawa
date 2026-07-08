@@ -16,6 +16,8 @@
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
 #include <gbm.h>
+#include <sys/ioctl.h>
+#include <linux/dma-buf.h>
 
 #include <sail/sail.h>
 #include <sail-manip/sail-manip.h>
@@ -47,6 +49,7 @@ struct output {
 	struct wl_buffer *anim_buf;  /* pre-allocated DMA-BUF wl_buffer (avoid per-frame alloc) */
 	void *anim_shm;              /* persistent mmap of DMA-BUF backing memory */
 	struct gbm_bo *anim_bo;      /* pre-allocated GBM BO for DMA-BUF */
+	int anim_dmabuf_fd;          /* DMA-BUF fd for dma_buf_sync ownership handover */
 
 	struct wl_list link;
 };
@@ -314,7 +317,9 @@ output_load_image(struct output *output)
 	unsigned char *data;
 
 	if (output->anim_left > 0 && output->anim_buf) {
-		/* Fast path — use pre-allocated SHM buffer, zero syscalls */
+		struct dma_buf_sync sync = { .flags = DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_START };
+		ioctl(output->anim_dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync);
+
 		data = output->anim_shm;
 		float a = 1.0f - (float)output->anim_left / FADE_STEPS;
 		for (int i = 0; i < output->size; i += 4) {
@@ -327,6 +332,9 @@ output_load_image(struct output *output)
 			data[i+3] = output->anim_old[i+3] * (1.0f - a) +
 			            output->anim_new[i+3] * a;
 		}
+
+		sync.flags = DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_END;
+		ioctl(output->anim_dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync);
 		return output->anim_buf;
 	}
 
@@ -347,6 +355,9 @@ output_load_image(struct output *output)
 	data = mmap(NULL, output->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (data == MAP_FAILED) die("mmap dma-buf:");
 
+	struct dma_buf_sync sync = { .flags = DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_START };
+	ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+
 	if (output->anim_left > 0) {
 		/* cross-fade blend (fallback, no pre-allocated buffer) */
 		float a = 1.0f - (float)output->anim_left / FADE_STEPS;
@@ -364,6 +375,8 @@ output_load_image(struct output *output)
 		image_modify(data, output);
 	}
 
+	sync.flags = DMA_BUF_SYNC_WRITE | DMA_BUF_SYNC_END;
+	ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
 	munmap(data, output->size);
 
 	struct zwp_linux_buffer_params_v1 *params =
@@ -450,6 +463,9 @@ layer_surface_handle_closed(void *data, struct zwlr_layer_surface_v1 *surface)
 
 	if (output->anim_shm) {
 		munmap(output->anim_shm, output->size);
+	}
+	if (output->anim_dmabuf_fd >= 0) {
+		close(output->anim_dmabuf_fd);
 	}
 	if (output->anim_buf) {
 		wl_buffer_destroy(output->anim_buf);
@@ -578,6 +594,10 @@ end_transition(void)
 		if (output->anim_shm) {
 			munmap(output->anim_shm, output->size);
 			output->anim_shm = NULL;
+		}
+		if (output->anim_dmabuf_fd >= 0) {
+			close(output->anim_dmabuf_fd);
+			output->anim_dmabuf_fd = -1;
 		}
 		if (output->anim_buf) {
 			wl_buffer_destroy(output->anim_buf);
@@ -718,7 +738,7 @@ start_transition(void)
 		output->anim_buf = zwp_linux_buffer_params_v1_create_immed(
 			params, output->width, output->height,
 			GBM_FORMAT_ARGB8888, 0);
-		close(fd);
+		output->anim_dmabuf_fd = fd;
 		output->anim_bo = bo;
 
 		/* Now allocate pre-rendered frames using the correct stride */

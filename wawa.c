@@ -350,13 +350,6 @@ output_load_image(struct output *output)
 		image_modify(data, output);
 	}
 
-	/* RGBA->BGRA */
-	for (int i = 0; i < output->size; i += 4) {
-		data[i] ^= data[i+2];
-		data[i+2] ^= data[i];
-		data[i] ^= data[i+2];
-	}
-
 	munmap(data, output->size);
 	return buffer;
 }
@@ -381,9 +374,9 @@ layer_surface_handle_configure(void *data, struct zwlr_layer_surface_v1 *layer_s
 			status = sail_load_from_file(image.path, &sail_img);
 			if (status != SAIL_OK) die("failed to load image");
 
-			if (sail_img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_RGBA) {
+			if (sail_img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_BGRA) {
 				struct sail_image *converted = NULL;
-				status = sail_convert_image(sail_img, SAIL_PIXEL_FORMAT_BPP32_RGBA, &converted);
+				status = sail_convert_image(sail_img, SAIL_PIXEL_FORMAT_BPP32_BGRA, &converted);
 				if (status != SAIL_OK) {
 					sail_destroy_image(sail_img);
 					die("failed to convert image to RGBA");
@@ -489,12 +482,12 @@ load_next_image(const char *path)
 	if (status != SAIL_OK)
 		die("failed to load image: %s", path);
 
-	if (img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_RGBA) {
+	if (img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_BGRA) {
 		struct sail_image *conv = NULL;
-		status = sail_convert_image(img, SAIL_PIXEL_FORMAT_BPP32_RGBA, &conv);
+		status = sail_convert_image(img, SAIL_PIXEL_FORMAT_BPP32_BGRA, &conv);
 		if (status != SAIL_OK) {
 			sail_destroy_image(img);
-			die("failed to convert image to RGBA");
+			die("failed to convert image to BGRA");
 		}
 		sail_destroy_image(img);
 		img = conv;
@@ -558,6 +551,14 @@ end_transition(void)
 
 	/* flush final 100% new frame to erase any blend residue */
 	render_static_frame();
+
+	/* Free current image data — next transition will reload from image.path.
+	 * This keeps steady-state memory near zero in --interval mode. */
+	if (image.dir) {
+		sail_destroy_image(image.sail_img);
+		image.data = NULL;
+		image.sail_img = NULL;
+	}
 }
 
 /* Render one frame of the cross-fade transition for all outputs */
@@ -601,11 +602,34 @@ start_transition(void)
 	if (next_image.sail_img)
 		end_transition(); /* finish lingering transition */
 
-	/* pick and load new image */
+	/* pick and load new image, update image.path */
 	if (image.dir) {
-		path = pick_random_file(image.dir);
-		load_next_image(path);
-		free(path);
+		/* Save old path for reloading the 'old' image if it was freed
+		 * after the previous transition (steady-state memory saving). */
+		char *old_path = image.path;
+
+		image.path = pick_random_file(image.dir);
+		load_next_image(image.path);
+
+		/* If image.data was freed (end_transition freed it), reload the
+		 * old image so we can pre-render anim_old for cross-fade. */
+		if (!image.data && old_path) {
+			struct sail_image *img = NULL;
+			sail_status_t st;
+			st = sail_load_from_file(old_path, &img);
+			if (st == SAIL_OK) {
+				if (img->pixel_format != SAIL_PIXEL_FORMAT_BPP32_BGRA) {
+					struct sail_image *conv = NULL;
+					st = sail_convert_image(img, SAIL_PIXEL_FORMAT_BPP32_BGRA, &conv);
+					if (st == SAIL_OK) { sail_destroy_image(img); img = conv; }
+				}
+				image.sail_img = img;
+				image.data = img->pixels;
+				image.width = img->width;
+				image.height = img->height;
+			}
+		}
+		free(old_path);
 	}
 
 	/* pre-resize old and new into each output's animation buffers */

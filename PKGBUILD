@@ -27,7 +27,6 @@ optdepends=(
     'libraw: RAW image format support (CRW/NEF/ARW/…)'
     'openjpeg2: JPEG 2000 image format support'
     'librsvg: SVG image format support'
-    'ffmpeg: Video frame / animated image extraction'
 )
 provides=("${_pkgname}=${pkgver}")
 conflicts=("${_pkgname}")

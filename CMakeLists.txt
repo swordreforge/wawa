@@ -12,6 +12,8 @@ set(SAIL_COMBINE_CODECS   ON  CACHE BOOL "Combine codecs into a single library f
 set(SAIL_THREAD_SAFE      OFF CACHE BOOL "Disable thread safety (wawa is single-threaded)")
 set(SAIL_MANIP_USE_SWSCALE OFF CACHE BOOL "Disable libswscale dependency for sail-manip")
 set(BUILD_TESTING            OFF CACHE BOOL "Disable SAIL tests")
+set(SAIL_DISABLE_CODECS "video;jbig" CACHE STRING
+    "Disable unused codecs: video (ffmpeg dep chain too heavy for wallpaper use), jbig (fax format)")
 
 # ---- RPATH: keep build tree working, strip for install (AUR compliance) ----
 # Installed binary/libs must not embed any build directory paths.

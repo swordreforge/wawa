@@ -733,30 +733,35 @@ start_transition(void)
 	}
 
 	/* Pre-allocate SHM buffers for the animation — eliminates
-	 * memfd_create/ftruncate/mmap/shm_pool per frame (8+ syscalls). */
-	wl_list_for_each(output, &outputs, link) {
-		if (!output->configured)
-			continue;
-		int fd = memfd_create("wawa-anim",
-			MFD_CLOEXEC | MFD_ALLOW_SEALING
-		#ifdef __linux__
-			| MFD_NOEXEC_SEAL
-		#endif
-		);
-		if (fd < 0) die("memfd_create:");
-		if (ftruncate(fd, output->size) < 0) die("ftruncate:");
-		output->anim_shm = mmap(NULL, output->size,
-			PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (output->anim_shm == MAP_FAILED) die("mmap:");
-		fcntl(fd, F_ADD_SEALS,
-			F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
+	 * memfd_create/ftruncate/mmap/shm_pool per frame (8+ syscalls).
+	 * Only for modes that fill the entire output (no letterbox).
+	 * fit mode creates per-frame buffers because letterbox areas
+	 * trigger compositor caching issues with reused buffers. */
+	if (image_modify != image_fit) {
+		wl_list_for_each(output, &outputs, link) {
+			if (!output->configured)
+				continue;
+			int fd = memfd_create("wawa-anim",
+				MFD_CLOEXEC | MFD_ALLOW_SEALING
+			#ifdef __linux__
+				| MFD_NOEXEC_SEAL
+			#endif
+			);
+			if (fd < 0) die("memfd_create:");
+			if (ftruncate(fd, output->size) < 0) die("ftruncate:");
+			output->anim_shm = mmap(NULL, output->size,
+				PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+			if (output->anim_shm == MAP_FAILED) die("mmap:");
+			fcntl(fd, F_ADD_SEALS,
+				F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
 
-		struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, output->size);
-		output->anim_buf = wl_shm_pool_create_buffer(pool, 0,
-			output->width, output->height,
-			output->stride, WL_SHM_FORMAT_ARGB8888);
-		wl_shm_pool_destroy(pool);
-		close(fd);
+			struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, output->size);
+			output->anim_buf = wl_shm_pool_create_buffer(pool, 0,
+				output->width, output->height,
+				output->stride, WL_SHM_FORMAT_ARGB8888);
+			wl_shm_pool_destroy(pool);
+			close(fd);
+		}
 	}
 
 	animating = 1;

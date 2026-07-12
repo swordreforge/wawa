@@ -3,7 +3,7 @@
 
 pkgname=wawa-git
 _pkgname=wawa
-pkgver=r53.cae4003
+pkgver=r61.17556be
 pkgrel=1
 pkgdesc="A simple, hackable, and distinctive Wayland wallpaper setter — wlr-layer-shell based, SAIL-powered"
 arch=('x86_64')
@@ -20,7 +20,7 @@ depends=(
     'giflib'
     'libavif'
 )
-makedepends=('cmake' 'wayland-protocols' 'git')
+makedepends=('cmake' 'wayland-protocols' 'git' 'glib2')
 optdepends=(
     'libheif: HEIF image format support'
     'libjxl: JPEG XL image format support'

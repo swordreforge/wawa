@@ -103,6 +103,17 @@ add_executable(wawa
     ${PROTOCOL_SRCS}
 )
 
+# ---- Optional GNOME/GSettings backend ----
+option(WAWA_GNOME "Build with GNOME/GSettings wallpaper backend" ON)
+
+if(WAWA_GNOME)
+    pkg_check_modules(GIO REQUIRED gio-2.0)
+    target_sources(wawa PRIVATE gnome-backend.c)
+    target_compile_definitions(wawa PRIVATE HAVE_GNOME_BACKEND)
+    target_include_directories(wawa PRIVATE ${GIO_INCLUDE_DIRS})
+    target_link_libraries(wawa PRIVATE ${GIO_LINK_LIBRARIES})
+endif()
+
 target_include_directories(wawa PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
 )

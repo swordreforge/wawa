@@ -1,4 +1,5 @@
 /* See LICENSE file for copyright and license details. */
+#include "wawa.h"
 #include <byteswap.h>
 #include <dirent.h>
 #include <errno.h>
@@ -27,6 +28,13 @@
 #include "stb_image_resize2.h"
 
 #include "wlr-layer-shell-unstable-v1-protocol.h"
+
+#ifdef HAVE_GNOME_BACKEND
+/* Defined in gnome-backend.c */
+void gnome_backend_run(int argc, char *argv[], const char *image_path,
+                       const char *image_dir, int random_flag,
+                       int interval_ms, int paused);
+#endif
 
 #define MAX(A, B) ((A) > (B) ? (A) : (B))
 #define MIN(A, B) ((A) < (B) ? (A) : (B))
@@ -65,19 +73,13 @@ static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wl_list outputs;
 
-struct {
-	char *path;
-	char *dir;       /* directory for re-scanning (--random mode) */
-	struct sail_image *sail_img;
-	int width, height;
-	unsigned char *data;
-} image;
+struct wawa_image image;
 
 static uint32_t color;
 
 /* Smart resolution check: if non-zero, skip images whose aspect ratio
  * deviates from the screen's by more than this fraction. */
-static double smart_tol;
+double smart_tol;
 
 static struct {
 	struct sail_image *sail_img;
@@ -85,18 +87,18 @@ static struct {
 	unsigned char *data;
 } next_image;
 
-static int interval_ms;   /* 0 = no interval switching */
+int interval_ms;   /* 0 = no interval switching */
 static int animating;     /* non-zero = transition in progress */
 static int anim_step;     /* current frame (0..FADE_STEPS-1) */
 static uint64_t next_switch_ms; /* monotonic ms for next switch */
-static int paused;        /* non-zero = interval switching paused */
+int paused;        /* non-zero = interval switching paused */
 
 /* Signal-driven IPC: flags set by signal handler, checked in event loop */
-static volatile sig_atomic_t sig_skip_next;
-static volatile sig_atomic_t sig_toggle_pause;
-static volatile sig_atomic_t sig_rescan;
+volatile sig_atomic_t sig_skip_next;
+volatile sig_atomic_t sig_toggle_pause;
+volatile sig_atomic_t sig_rescan;
 
-static void
+void
 sig_handler(int sig)
 {
 	switch (sig) {
@@ -130,7 +132,7 @@ static const char *supported_exts[] = {
 	NULL
 };
 
-static int
+int
 scan_filter(const struct dirent *entry)
 {
 	const char *dot;
@@ -150,7 +152,7 @@ scan_filter(const struct dirent *entry)
 	return 0;
 }
 
-static void
+void
 die(const char *fmt, ...)
 {
 	va_list ap;
@@ -170,7 +172,7 @@ die(const char *fmt, ...)
 	exit(EXIT_FAILURE);
 }
 
-static bool
+bool
 parse_color(const char *src)
 {
 	int len;
@@ -317,7 +319,7 @@ set_image_modify(const char *mode)
  * Wallpaper must never carry alpha — any pixel with A < 255 causes
  * the compositor (which uses premultiplied alpha internally) to
  * semi-transparently blend with stale BACKGROUND-layer content. */
-static void
+void
 sail_force_opaque(struct sail_image *img)
 {
 	uint32_t *p = (uint32_t *)img->pixels;
@@ -534,7 +536,7 @@ static const struct wl_callback_listener frame_listener = {
  * (no pixel decoding).  When screen dimensions aren't known yet (0),
  * passes everything — the first pick happens before outputs are
  * configured; subsequent interval picks do full validation. */
-static int
+int
 image_probe_suitable(const char *path, int screen_w, int screen_h)
 {
 	if (smart_tol == 0.0 || screen_w == 0 || screen_h == 0)
@@ -558,7 +560,7 @@ image_probe_suitable(const char *path, int screen_w, int screen_h)
  * Re-scans when the cache is exhausted (all files picked once) or on
  * first call.  When smart_tol is set, probes candidates and skips
  * mismatched aspect ratios, trying each file once before falling back. */
-static char *
+char *
 pick_random_file(const char *dir, int screen_w, int screen_h)
 {
 	static struct dirent **namelist;
@@ -862,6 +864,13 @@ output_setup_callback(void *data, struct wl_callback *callback,
 {
 	struct output *output = data;
 
+	/* If layer_shell is not available (e.g. GNOME), skip output setup.
+	 * The GNOME backend will handle wallpaper setting instead. */
+	if (!layer_shell) {
+		wl_callback_destroy(callback);
+		return;
+	}
+
 	output->surface = wl_compositor_create_surface(compositor);
 	
 	output->layer_surface = zwlr_layer_shell_v1_get_layer_surface(layer_shell,
@@ -994,8 +1003,17 @@ main(int argc, char *argv[])
 	 * image stuck in the queue indefinitely. */
 	wl_display_flush(display);
 
-	if (!compositor || !layer_shell || !shm)
+	if (!compositor || !layer_shell || !shm) {
+#ifdef HAVE_GNOME_BACKEND
+		/* wlr-layer-shell not available — try GNOME/GSettings backend */
+		wl_display_disconnect(display);
+		gnome_backend_run(argc, argv, image.path, image.dir,
+		                  random_flag, interval_ms, paused);
+		return EXIT_SUCCESS;
+#else
 		die("bad compositor available");
+#endif
+	}
 
 	if (interval_ms > 0)
 		next_switch_ms = now_ms() + interval_ms;

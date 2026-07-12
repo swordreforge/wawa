@@ -54,11 +54,40 @@ for those who want to tile or etc.
 
 No other wallpaper setter supports tiling out of the box.
 
+## GNOME Support
+
+wawa automatically detects GNOME/Mutter desktops and falls back to the
+GSettings backend when `wlr-layer-shell` is not available. All CLI options
+(`--random`, `--interval`, `--smart`, signals) work identically.
+
+**Mode mapping** (wawa → GNOME `picture-options`):
+
+| wawa mode | GNOME style |
+|-----------|-------------|
+| `fill`    | `zoom`      |
+| `fit`     | `scaled`    |
+| `stretch` | `stretched` |
+| `tile`    | `wallpaper` |
+| `spread`  | `spanned`   |
+
+**Format compatibility:** Images in formats not natively supported by
+GNOME's GdkPixbuf (e.g. PSD, QOI, HDR, EXR) are automatically converted
+to PNG via SAIL before setting.
+
+**Note:** Cross-fade animation is not available in GNOME mode — wallpaper
+switches are instant (GNOME does not expose a cross-fade API for
+programmatic wallpaper changes).
+
+To disable the GNOME backend at build time:
+```bash
+cmake -B build -DWAWA_GNOME=OFF
+```
+
 ## Building
 
 ```bash
 # Dependencies (Arch Linux)
-sudo pacman -S cmake wayland wayland-protocols \
+sudo pacman -S cmake wayland wayland-protocols glib2 \
   libpng libjpeg-turbo libwebp libtiff giflib libavif
 
 # Build (Release)

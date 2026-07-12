@@ -101,6 +101,9 @@ gnome_set_wallpaper(const char *path)
 	GSettings *s = g_settings_new("org.gnome.desktop.background");
 	g_settings_set_string(s, "picture-uri", uri);
 	g_settings_set_string(s, "picture-uri-dark", uri);
+	/* Set solid black background to avoid flicker during wallpaper switches */
+	g_settings_set_string(s, "color-shading-type", "solid");
+	g_settings_set_string(s, "primary-color", "#000000");
 	g_object_unref(s);
 	g_free(uri);
 }
